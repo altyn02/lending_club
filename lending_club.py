@@ -1,6 +1,5 @@
-# app.py — Lending Club Dashboard (fixed dataset, no upload required)
+# app.py — Lending Club Dashboard (using local dataset)
 
-import os, io, tempfile, requests
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -35,28 +34,10 @@ section.main > div { padding-top: 1rem; }
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-# -------------------- Helpers --------------------
-@st.cache_data(show_spinner=True)
-def load_fixed_dataset() -> pd.DataFrame:
-    url = "https://github.com/altyn02/lending_club/releases/download/lending/accepted_merged.csv"
-    local_path = tempfile.mktemp(suffix=".csv")
-    with requests.get(url, stream=True) as r:
-        r.raise_for_status()
-        with open(local_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-    return pd.read_csv(local_path, low_memory=False)
-
-def safe_to_datetime(s):
-    dt = pd.to_datetime(s, errors="coerce", format="%b-%Y")
-    if dt.isna().all():
-        dt = pd.to_datetime(s, errors="coerce")
-    return dt
-
-# -------------------- HERO HEADER --------------------
+# -------------------- HERO --------------------
 TITLE = "Lending Club Credit Dashboard"
 SUBTITLE = "Welcome 👋 — Explore, analyze, and visualize Lending Club data interactively."
-LOGO_URL = "https://raw.githubusercontent.com/altyn02/lending_club/main/assets/lendingclub_logo.png"  # Adjust if needed
+LOGO_URL = "https://raw.githubusercontent.com/altyn02/lending_club/main/assets/lendingclub_logo.png"
 
 st.markdown(
     f"""
@@ -74,30 +55,42 @@ st.markdown(
 )
 st.write("")
 
-# -------------------- Load Dataset --------------------
-df_full = load_fixed_dataset()
+# -------------------- Load Local Dataset --------------------
+# If your dataset file is in the same folder, just set the filename below
+DATA_PATH = "accepted_merged.csv"   # 👈 Replace with your actual file name
 
-# Clean column types
+@st.cache_data
+def load_local_data():
+    return pd.read_csv(DATA_PATH, low_memory=False)
+
+df_full = load_local_data()
+
+# -------------------- Light Cleaning --------------------
 if "int_rate" in df_full and not pd.api.types.is_numeric_dtype(df_full["int_rate"]):
     df_full["int_rate"] = (
         df_full["int_rate"].astype(str).str.replace("%","", regex=False)
         .str.extract(r"([-+]?\d*\.?\d+)", expand=False).astype(float)
     )
+
 if "revol_util" in df_full and not pd.api.types.is_numeric_dtype(df_full["revol_util"]):
     df_full["revol_util"] = (
         df_full["revol_util"].astype(str).str.replace("%","", regex=False)
         .str.extract(r"([-+]?\d*\.?\d+)", expand=False).astype(float)
     )
+
 if "issue_d" in df_full:
-    df_full["issue_d"] = safe_to_datetime(df_full["issue_d"])
+    issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce", format="%b-%Y")
+    if issue_dt.isna().all():
+        issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce")
+    df_full["issue_d"] = issue_dt
     if df_full["issue_d"].notna().any():
         df_full["issue_year"] = df_full["issue_d"].dt.year
 
-# Optional: Sampling to speed up dashboard
+# Sampling for performance
 SAMPLE_N = 200_000
 df = df_full.sample(min(len(df_full), SAMPLE_N), random_state=42)
 
-# -------------------- KPI ROW --------------------
+# -------------------- KPIs --------------------
 total_rows = len(df_full)
 total_cols = df_full.shape[1]
 date_min = df_full["issue_d"].min().date().isoformat() if "issue_d" in df_full and df_full["issue_d"].notna().any() else "—"
@@ -121,7 +114,8 @@ with k4:
 
 st.write("")
 
-# -------------------- DASHBOARD GRID --------------------
+# -------------------- Dashboard Visuals --------------------
+
 # Row 1: Loans by Year | Interest Rate
 r1c1, r1c2 = st.columns((1.25, 1))
 with r1c1:
@@ -157,7 +151,7 @@ with r1c2:
         st.caption("Column 'int_rate' not found.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Row 2: Status by Grade | Missingness (Top 12)
+# Row 2: Status by Grade | Missingness
 r2c1, r2c2 = st.columns((1.25, 1))
 with r2c1:
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -194,4 +188,9 @@ with r2c2:
 st.write("")
 st.markdown(
     """
-    <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10
+    <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
+      Dashboard built with Streamlit — using your local dataset 🎯
+    </div>
+    """,
+    unsafe_allow_html=True
+)
