@@ -1,4 +1,4 @@
-# app.py — Lending Club Design-First Dashboard (with hero, logo, and data controls)
+# app.py — Lending Club Dashboard (fixed dataset, no upload required)
 
 import os, io, tempfile, requests
 import numpy as np
@@ -14,24 +14,20 @@ pd.set_option("display.max_columns", 200)
 # -------------------- CSS (Design) --------------------
 CSS = """
 <style>
-/* global */
 html, body, [class*="css"] { font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial; }
 section.main > div { padding-top: 1rem; }
 
-/* gradient hero */
 .hero {
   background: linear-gradient(135deg, #0ea5e9 0%, #8b5cf6 100%);
   color: white; border-radius: 20px; padding: 24px 24px;
   box-shadow: 0 8px 30px rgba(27,31,35,.15);
 }
 
-/* cards */
 .card {
   background: white; border-radius: 16px; padding: 18px 18px;
   box-shadow: 0 10px 30px rgba(0,0,0,.06); border: 1px solid rgba(0,0,0,.04);
 }
 
-/* KPI cards */
 .kpi { border-radius: 16px; padding: 14px 16px; background: #f8fafc; border: 1px solid #e5e7eb; }
 .kpi .label { font-size: 0.92rem; color: #475569; }
 .kpi .value { font-size: 1.35rem; font-weight: 700; color: #0f172a; }
@@ -40,46 +36,27 @@ section.main > div { padding-top: 1rem; }
 st.markdown(CSS, unsafe_allow_html=True)
 
 # -------------------- Helpers --------------------
-@st.cache_data(show_spinner=False)
-def download_to_tmp(url: str) -> str:
-    """Stream-download large file to a tmp path and return the local path."""
-    ext = ".csv" if url.lower().endswith(".csv") else ".parquet"
-    fd, path = tempfile.mkstemp(suffix=ext); os.close(fd)
-    with requests.get(url, stream=True, timeout=180) as r:
+@st.cache_data(show_spinner=True)
+def load_fixed_dataset() -> pd.DataFrame:
+    url = "https://github.com/altyn02/lending_club/releases/download/lending/accepted_merged.csv"
+    local_path = tempfile.mktemp(suffix=".csv")
+    with requests.get(url, stream=True) as r:
         r.raise_for_status()
-        total = int(r.headers.get("Content-Length", 0))
-        done = 0; chunk = 1024 * 1024
-        prog = st.progress(0, text="Downloading…")
-        with open(path, "wb") as f:
-            for part in r.iter_content(chunk_size=chunk):
-                if part:
-                    f.write(part); done += len(part)
-                    if total:
-                        prog.progress(min(done/total, 1.0),
-                                      text=f"Downloading… {done//(1024*1024)} / {total//(1024*1024)} MB")
-        prog.empty()
-    return path
+        with open(local_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    return pd.read_csv(local_path, low_memory=False)
 
-def load_df_from_source(mode: str, url: str | None, upload) -> pd.DataFrame:
-    """Load DataFrame from URL or uploaded file."""
-    if mode == "Upload" and upload is not None:
-        return pd.read_parquet(upload) if upload.name.lower().endswith(".parquet") else pd.read_csv(upload, low_memory=False)
-    if mode == "URL" and url:
-        local = download_to_tmp(url)
-        return pd.read_parquet(local) if local.lower().endswith(".parquet") else pd.read_csv(local, low_memory=False)
-    raise RuntimeError("No data source provided.")
-
-def safe_to_datetime(s: pd.Series) -> pd.Series:
-    """Parse LC 'issue_d' style like 'May-2015', fallback to general parser."""
+def safe_to_datetime(s):
     dt = pd.to_datetime(s, errors="coerce", format="%b-%Y")
     if dt.isna().all():
         dt = pd.to_datetime(s, errors="coerce")
     return dt
 
-# -------------------- HERO (Logo + Title + Welcome) --------------------
+# -------------------- HERO HEADER --------------------
 TITLE = "Lending Club Credit Dashboard"
-SUBTITLE = "Welcome 👋 — explore, analyze, and visualize Lending Club data interactively."
-LOGO_URL = "https://github.com/altyn02/lending_club/releases/download/lending_photo/lending.webp"  # change if needed
+SUBTITLE = "Welcome 👋 — Explore, analyze, and visualize Lending Club data interactively."
+LOGO_URL = "https://raw.githubusercontent.com/altyn02/lending_club/main/assets/lendingclub_logo.png"  # Adjust if needed
 
 st.markdown(
     f"""
@@ -91,48 +68,16 @@ st.markdown(
           <div style="opacity:.95; margin-top:6px; font-size:1.05rem;">{SUBTITLE}</div>
         </div>
       </div>
-      <div style="margin-top:12px; opacity:.95;">
-        <em>💡 Tip: You can load from a GitHub Release URL or upload a local file. Use sampling for speed.</em>
-      </div>
     </div>
     """,
     unsafe_allow_html=True
 )
 st.write("")
 
-# -------------------- Data Controls (Inline) --------------------
-st.markdown("#### Data Source")
-data_col1, data_col2, data_col3 = st.columns([1, 3, 3])
+# -------------------- Load Dataset --------------------
+df_full = load_fixed_dataset()
 
-with data_col1:
-    mode = st.radio("Mode", ["URL", "Upload"], horizontal=True, label_visibility="visible")
-
-default_url = "https://github.com/altyn02/lending_club/releases/download/lending/accepted_merged.csv"
-with data_col2:
-    url = st.text_input("Dataset URL", value=default_url if mode == "URL" else "", placeholder="https://…", disabled=(mode != "URL"))
-
-with data_col3:
-    upload = st.file_uploader("Upload CSV or Parquet", type=["csv","parquet"], disabled=(mode != "Upload"))
-
-perf_col1, perf_col2 = st.columns([1.5, 1])
-with perf_col1:
-    sample_n = st.slider("Rows to analyze (sample)", 50_000, 500_000, 150_000, 50_000)
-with perf_col2:
-    st.caption("Sampling keeps the dashboard responsive for 1GB+ CSVs.")
-
-# Validation
-if (mode == "URL" and not url) or (mode == "Upload" and upload is None):
-    st.info("Provide a URL or upload a file to continue.")
-    st.stop()
-
-# -------------------- Load & light typing --------------------
-try:
-    df_full = load_df_from_source(mode, url, upload)
-except Exception as e:
-    st.error(f"Failed to load dataset: {e}")
-    st.stop()
-
-# Light type fixes for common LC columns
+# Clean column types
 if "int_rate" in df_full and not pd.api.types.is_numeric_dtype(df_full["int_rate"]):
     df_full["int_rate"] = (
         df_full["int_rate"].astype(str).str.replace("%","", regex=False)
@@ -148,8 +93,9 @@ if "issue_d" in df_full:
     if df_full["issue_d"].notna().any():
         df_full["issue_year"] = df_full["issue_d"].dt.year
 
-# Sample for speed
-df = df_full.sample(min(len(df_full), sample_n), random_state=42) if len(df_full) > sample_n else df_full.copy()
+# Optional: Sampling to speed up dashboard
+SAMPLE_N = 200_000
+df = df_full.sample(min(len(df_full), SAMPLE_N), random_state=42)
 
 # -------------------- KPI ROW --------------------
 total_rows = len(df_full)
@@ -248,9 +194,4 @@ with r2c2:
 st.write("")
 st.markdown(
     """
-    <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
-      Design-first dashboard. Plug in preprocessing, partitioning, and modeling when ready.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+    <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10
