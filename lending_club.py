@@ -241,76 +241,165 @@ tab_hist, tab_box, tab_density, tab_corr, tab_logit = st.tabs([
     "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)", "🧮 Correlation Heatmap", "🧠 Logit"
 ])
 
-# ========== Histograms ==========
+# ========== Histograms (single or grid) ==========
 with tab_hist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Histogram (suitable variables only)")
+
     if not HIST_NUM:
         st.info("No suitable continuous numeric columns for histograms.")
     else:
-        col = st.selectbox("Numeric column", options=HIST_NUM, index=0, key="hist_col")
+        grid = st.checkbox("Grid mode (show multiple variables)", value=True, key="hist_grid")
         bins = st.slider("Bins", 10, 80, 40, 5, key="hist_bins")
-        src = df_eda[[col, "target"]].dropna() if "target" in df_eda.columns else df_eda[[col]].dropna()
-        if "target" in df_eda.columns:
+
+        if grid:
+            # choose several variables for the grid
+            chosen = st.multiselect(
+                "Variables (up to 12 recommended)",
+                options=HIST_NUM,
+                default=HIST_NUM[:min(9, len(HIST_NUM))],
+                key="hist_vars_grid"
+            )
+            if not chosen:
+                st.info("Pick at least one variable.")
+            else:
+                src = df_eda[chosen + (["target"] if "target" in df_eda.columns else [])].dropna()
+                chart = (
+                    alt.Chart(src)
+                    .transform_fold(chosen, as_=["variable", "value"])
+                    .mark_bar(opacity=0.7)
+                    .encode(
+                        x=alt.X("value:Q", bin=alt.Bin(maxbins=bins), title=None),
+                        y=alt.Y("count():Q", title="Count"),
+                        color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
+                        facet=alt.Facet("variable:N", columns=3, title="")
+                    )
+                    .properties(height=160)
+                )
+                st.altair_chart(chart, use_container_width=True)
+        else:
+            col = st.selectbox("Variable", options=HIST_NUM, index=0, key="hist_one")
+            src = df_eda[[col] + (["target"] if "target" in df_eda.columns else [])].dropna()
             chart = alt.Chart(src).mark_bar(opacity=0.7).encode(
                 x=alt.X(f"{col}:Q", bin=alt.Bin(maxbins=bins), title=col),
                 y=alt.Y("count():Q", title="Count"),
-                color=alt.Color("target:N", title="target"),
+                color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
                 tooltip=[col, "count()"]
             ).properties(height=340)
-        else:
-            chart = alt.Chart(src).mark_bar().encode(
-                x=alt.X(f"{col}:Q", bin=alt.Bin(maxbins=bins), title=col),
-                y=alt.Y("count():Q", title="Count"),
-                tooltip=[col, "count()"]
-            ).properties(height=340)
-        st.altair_chart(chart, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+            st.altair_chart(chart, use_container_width=True)
 
-# ========== Boxplots ==========
+    st.markdown('</div>', unsafe_allow_html=True)
+# ========== Boxplots (single or grid) ==========
 with tab_box:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Boxplot (numeric Y vs categorical X)")
+
     if not BOX_Y_NUM or not BOX_X_CAT:
         st.info("Need at least one continuous numeric (Y) and one categorical (X).")
     else:
-        x_col = st.selectbox("Group by (categorical X)", options=BOX_X_CAT, index=0, key="box_x")
-        y_col = st.selectbox("Y (numeric)", options=BOX_Y_NUM, index=0, key="box_y")
-        src = df_eda[[x_col, y_col]].dropna()
-        box = alt.Chart(src).mark_boxplot().encode(
-            x=alt.X(f"{x_col}:N", title=x_col),
-            y=alt.Y(f"{y_col}:Q", title=y_col),
-            color=alt.Color(f"{x_col}:N", legend=None)
-        ).properties(height=340)
-        st.altair_chart(box, use_container_width=True)
+        x_col = st.selectbox("Group by (categorical X)", options=BOX_X_CAT, index=0, key="box_x_grid")
+        grid = st.checkbox("Grid mode (multiple Y variables)", value=True, key="box_grid")
+
+        if grid:
+            y_vars = st.multiselect(
+                "Y variables (numeric, up to 12 recommended)",
+                options=BOX_Y_NUM,
+                default=BOX_Y_NUM[:min(9, len(BOX_Y_NUM))],
+                key="box_y_vars"
+            )
+            if not y_vars:
+                st.info("Pick at least one Y.")
+            else:
+                src = df_eda[[x_col] + y_vars].dropna()
+                melt = src.melt(id_vars=[x_col], value_vars=y_vars, var_name="variable", value_name="value")
+                chart = (
+                    alt.Chart(melt)
+                    .mark_boxplot()
+                    .encode(
+                        x=alt.X(f"{x_col}:N", title=x_col),
+                        y=alt.Y("value:Q", title=None),
+                        color=alt.Color(f"{x_col}:N", legend=None),
+                        facet=alt.Facet("variable:N", columns=3, title="")
+                    )
+                    .properties(height=160)
+                )
+                st.altair_chart(chart, use_container_width=True)
+        else:
+            y_col = st.selectbox("Y (numeric)", options=BOX_Y_NUM, index=0, key="box_y_one")
+            src = df_eda[[x_col, y_col]].dropna()
+            chart = alt.Chart(src).mark_boxplot().encode(
+                x=alt.X(f"{x_col}:N", title=x_col),
+                y=alt.Y(f"{y_col}:Q", title=y_col),
+                color=alt.Color(f"{x_col}:N", legend=None)
+            ).properties(height=340)
+            st.altair_chart(chart, use_container_width=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ========== Density (KDE via transform_density) ==========
+# ========== Density (KDE; single or grid) ==========
 with tab_density:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Density (KDE) — suitable continuous variables")
+
     if not DENS_NUM:
         st.info("No suitable continuous numeric columns for density.")
     else:
-        dens_col = st.selectbox("Numeric column", options=DENS_NUM, index=0, key="dens")
-        src = df_eda[[dens_col, "target"]].dropna() if "target" in df_eda.columns else df_eda[[dens_col]].dropna()
-        if "target" in df_eda.columns:
-            dens = alt.Chart(src).transform_density(
-                dens_col, groupby=["target"], as_=[dens_col, "density"]
-            ).mark_area(opacity=0.5).encode(
-                x=alt.X(f"{dens_col}:Q", title=dens_col),
-                y=alt.Y("density:Q"),
-                color="target:N"
-            ).properties(height=340)
+        grid = st.checkbox("Grid mode (show multiple variables)", value=True, key="dens_grid")
+
+        if grid:
+            chosen = st.multiselect(
+                "Variables (up to 12 recommended)",
+                options=DENS_NUM,
+                default=DENS_NUM[:min(9, len(DENS_NUM))],
+                key="dens_vars_grid"
+            )
+            if not chosen:
+                st.info("Pick at least one variable.")
+            else:
+                src = df_eda[chosen + (["target"] if "target" in df_eda.columns else [])].dropna()
+                base = alt.Chart(src).transform_fold(chosen, as_=["variable", "value"])
+
+                if "target" in src.columns:
+                    chart = base.transform_density(
+                        "value", groupby=["variable", "target"], as_=["value", "density"]
+                    ).mark_area(opacity=0.5).encode(
+                        x=alt.X("value:Q", title=None),
+                        y="density:Q",
+                        color="target:N",
+                        facet=alt.Facet("variable:N", columns=3, title="")
+                    ).properties(height=160)
+                else:
+                    chart = base.transform_density(
+                        "value", groupby=["variable"], as_=["value", "density"]
+                    ).mark_area(opacity=0.6).encode(
+                        x=alt.X("value:Q", title=None),
+                        y="density:Q",
+                        facet=alt.Facet("variable:N", columns=3, title="")
+                    ).properties(height=160)
+
+                st.altair_chart(chart, use_container_width=True)
         else:
-            dens = alt.Chart(src).transform_density(
-                dens_col, as_=[dens_col, "density"]
-            ).mark_area(opacity=0.6).encode(
-                x=alt.X(f"{dens_col}:Q", title=dens_col),
-                y=alt.Y("density:Q")
-            ).properties(height=340)
-        st.altair_chart(dens, use_container_width=True)
+            col = st.selectbox("Variable", options=DENS_NUM, index=0, key="dens_one")
+            src = df_eda[[col] + (["target"] if "target" in df_eda.columns else [])].dropna()
+            if "target" in src.columns:
+                dens = alt.Chart(src).transform_density(
+                    col, groupby=["target"], as_=[col, "density"]
+                ).mark_area(opacity=0.5).encode(
+                    x=alt.X(f"{col}:Q", title=col),
+                    y="density:Q",
+                    color="target:N"
+                ).properties(height=340)
+            else:
+                dens = alt.Chart(src).transform_density(
+                    col, as_=[col, "density"]
+                ).mark_area(opacity=0.6).encode(
+                    x=alt.X(f"{col}:Q", title=col),
+                    y="density:Q"
+                ).properties(height=340)
+            st.altair_chart(dens, use_container_width=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ========== Correlation Heatmap ==========
 with tab_corr:
