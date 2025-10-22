@@ -60,8 +60,8 @@ st.markdown(
 st.write("")
 
 # -------------------- Load dataset (local first, then GitHub fallback) --------------------
-DATA_PATH = Path(__file__).with_name("accepted_merged.csv")
-DATA_URL = "https://github.com/altyn02/lending_club/releases/download/lending/accepted_merged.csv"
+DATA_PATH = Path(__file__).with_name("early_pool_balanced_15k_each.csv")
+DATA_URL = "https://github.com/altyn02/lending_club/releases/download/15k_lending/early_pool_balanced_15k_each.csv"
 
 @st.cache_data(show_spinner=True)
 def _download_csv_to_tmp(url: str) -> str:
