@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="Lending Club Dashboard")
-st.title("📊 Lending Club Data Dashboard")
+st.title("💳 Lending Club Data Dashboard")
 
 url = "https://github.com/altyn02/lending_club/releases/download/lending/accepted_merged.csv"
 
