@@ -79,7 +79,7 @@ def safe_to_datetime(s: pd.Series) -> pd.Series:
 # -------------------- HERO (Logo + Title + Welcome) --------------------
 TITLE = "Lending Club Credit Dashboard"
 SUBTITLE = "Welcome 👋 — explore, analyze, and visualize Lending Club data interactively."
-LOGO_URL = "https://raw.githubusercontent.com/altyn02/lending_club/main/assets/lendingclub_logo.png"  # change if needed
+LOGO_URL = "https://github.com/altyn02/lending_club/releases/download/lending_photo/lending.webp"  # change if needed
 
 st.markdown(
     f"""
