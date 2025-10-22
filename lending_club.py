@@ -103,7 +103,7 @@ if "issue_year" not in df_full.columns:
         if issue_dt.isna().all():
             issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce")
         df_full["issue_year"] = issue_dt.dt.year
-# If still missing, leave it out (filters/charts adapt)
+# If still missing, filters adapt.
 
 # -------------------- Sidebar Filters (issue_year slider) --------------------
 with st.sidebar:
@@ -111,12 +111,11 @@ with st.sidebar:
 
     year_range = None
     if "issue_year" in df_full.columns and df_full["issue_year"].notna().any():
-        min_year = int(pd.to_numeric(df_full["issue_year"], errors="coerce").dropna().min())
-        max_year = int(pd.to_numeric(df_full["issue_year"], errors="coerce").dropna().max())
+        years = pd.to_numeric(df_full["issue_year"], errors="coerce").dropna().astype(int)
+        min_year, max_year = int(years.min()), int(years.max())
         year_range = st.slider(
             "Filter by Issue Year",
-            min_value=min_year,
-            max_value=max_year,
+            min_value=min_year, max_value=max_year,
             value=(min_year, max_year)
         )
     else:
@@ -136,23 +135,24 @@ with st.sidebar:
 df = df_full.copy()
 
 if year_range and "issue_year" in df.columns:
-    df = df[
-        (pd.to_numeric(df["issue_year"], errors="coerce") >= year_range[0]) &
-        (pd.to_numeric(df["issue_year"], errors="coerce") <= year_range[1])
-    ]
+    iy = pd.to_numeric(df["issue_year"], errors="coerce")
+    df = df[(iy >= year_range[0]) & (iy <= year_range[1])]
 
-if grade_sel is not None and len(grade_sel) > 0:
+if grade_sel:
     df = df[df["grade"].astype(str).isin(grade_sel)]
-
-if term_sel is not None and len(term_sel) > 0:
+if term_sel:
     df = df[df["term"].astype(str).isin(term_sel)]
+
+# Consistent target type (makes Altair color legend stable)
+if "target" in df.columns:
+    df["target"] = df["target"].astype("category")
 
 # -------------------- KPIs --------------------
 total_rows = len(df)
 total_cols = df.shape[1]
 bad_ratio = "—"
 if "target" in df.columns:
-    bad = (df["target"] == 1).mean()
+    bad = (df["target"].astype(int) == 1).mean()
     bad_ratio = f"{bad*100:.1f}%"
 
 k1, k2, k3 = st.columns(3)
@@ -173,6 +173,12 @@ tab_hist, tab_box, tab_density, tab_corr = st.tabs([
 # Prepare numeric column list once
 num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
 
+def default_index(cols, preferred):
+    try:
+        return cols.index(preferred)
+    except Exception:
+        return 0 if cols else 0
+
 # ========== Histograms ==========
 with tab_hist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -180,7 +186,7 @@ with tab_hist:
     if len(num_cols) == 0:
         st.info("No numeric columns available.")
     else:
-        col = st.selectbox("Numeric column", options=num_cols, index=0)
+        col = st.selectbox("Numeric column", options=num_cols, index=default_index(num_cols, "int_rate"))
         bins = st.slider("Bins", 10, 80, 40, 5)
         if "target" in df.columns:
             chart = alt.Chart(df).mark_bar(opacity=0.7).encode(
@@ -205,7 +211,7 @@ with tab_box:
     if len(num_cols) == 0:
         st.info("No numeric columns available.")
     else:
-        y_col = st.selectbox("Y (numeric)", options=num_cols, index=0, key="box_y")
+        y_col = st.selectbox("Y (numeric)", options=num_cols, index=default_index(num_cols, "annual_inc"), key="box_y")
         cat_options = []
         if "target" in df.columns:
             cat_options.append("target")
@@ -230,7 +236,7 @@ with tab_density:
     if len(num_cols) == 0:
         st.info("No numeric columns available.")
     else:
-        dens_col = st.selectbox("Numeric column", options=num_cols, index=0, key="dens")
+        dens_col = st.selectbox("Numeric column", options=num_cols, index=default_index(num_cols, "dti"), key="dens")
         if "target" in df.columns:
             dens = alt.Chart(df).transform_density(
                 dens_col, groupby=["target"], as_=[dens_col, "density"]
