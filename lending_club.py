@@ -1,4 +1,4 @@
-# app.py — Lending Club Dashboard (target-only, issue_year filter)
+# app.py — Lending Club Dashboard (target-only, issue_year filter + Logit visuals)
 # Dataset: early_pool_balanced_15k_each.csv
 
 import os
@@ -91,19 +91,16 @@ def to_float_pct(series: pd.Series) -> pd.Series:
     s = s.str.extract(r"([-+]?\d*\.?\d+)", expand=False)
     return pd.to_numeric(s, errors="coerce")
 
-# Convert common percent-like columns if needed
 for col in ["int_rate", "revol_util", "dti"]:
     if col in df_full and not pd.api.types.is_numeric_dtype(df_full[col]):
         df_full[col] = to_float_pct(df_full[col])
 
-# Ensure we have issue_year; derive from issue_d if needed
 if "issue_year" not in df_full.columns:
     if "issue_d" in df_full.columns:
         issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce", format="%b-%Y")
         if issue_dt.isna().all():
             issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce")
         df_full["issue_year"] = issue_dt.dt.year
-# If still missing, filters adapt.
 
 # -------------------- Sidebar Filters (issue_year slider) --------------------
 with st.sidebar:
@@ -143,7 +140,7 @@ if grade_sel:
 if term_sel:
     df = df[df["term"].astype(str).isin(term_sel)]
 
-# Consistent target type (makes Altair color legend stable)
+# Consistent target type for coloring
 if "target" in df.columns:
     df["target"] = df["target"].astype("category")
 
@@ -166,8 +163,8 @@ with k3:
 st.write("")
 
 # -------------------- Tabs --------------------
-tab_hist, tab_box, tab_density, tab_corr = st.tabs([
-    "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)", "🧮 Correlation Heatmap"
+tab_hist, tab_box, tab_density, tab_corr, tab_logit = st.tabs([
+    "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)", "🧮 Correlation Heatmap", "🧠 Logit (no eval)"
 ])
 
 # Prepare numeric column list once
@@ -289,12 +286,117 @@ with tab_corr:
             st.altair_chart(heat, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+# ========== Logit (no performance evaluation) ==========
+with tab_logit:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Logistic Regression — Interpret the model")
+
+    if "target" not in df.columns:
+        st.info("No 'target' column found.")
+    else:
+        # --- UI: choose features & options ---
+        numeric_pool = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
+        if len(numeric_pool) == 0:
+            st.info("No numeric features available for logit.")
+        else:
+            default_feats = [c for c in ["int_rate","dti","revol_util","loan_amnt","annual_inc"] if c in numeric_pool]
+            if not default_feats:
+                default_feats = numeric_pool[:5]
+
+            feats = st.multiselect("Select features (numeric)", options=numeric_pool, default=default_feats)
+            one_x_for_plot = st.selectbox("Feature to plot vs probability", options=feats if feats else numeric_pool, index=0)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                C = st.slider("Regularization strength (C)", 0.01, 10.0, 1.0, 0.01)
+            with col2:
+                balance = st.checkbox("Class weight = 'balanced'", value=True)
+
+            # --- Fit logit (sklearn) with standardization ---
+            try:
+                from sklearn.preprocessing import StandardScaler
+                from sklearn.linear_model import LogisticRegression
+                from sklearn.compose import ColumnTransformer
+                from sklearn.pipeline import Pipeline
+
+                # clean rows used for training
+                use = ["target"] + feats
+                dtrain = df[use].dropna().copy()
+                X = dtrain[feats].values
+                y = dtrain["target"].astype(int).values
+
+                pipe = Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("logit", LogisticRegression(
+                        C=C, class_weight=("balanced" if balance else None),
+                        solver="liblinear", max_iter=200
+                    ))
+                ])
+                pipe.fit(X, y)
+                probs = pipe.predict_proba(X)[:, 1]
+
+                # ---- 1) Coefficients as Odds Ratios ----
+                clf = pipe.named_steps["logit"]
+                coefs = clf.coef_.ravel()
+                odds = np.exp(coefs)
+                coef_df = pd.DataFrame({"feature": feats, "odds_ratio": odds}).sort_values("odds_ratio", ascending=False)
+
+                coef_chart = alt.Chart(coef_df).mark_bar().encode(
+                    x=alt.X("odds_ratio:Q", title="Odds Ratio (exp(coef))"),
+                    y=alt.Y("feature:N", sort="-x", title=""),
+                    tooltip=["feature", alt.Tooltip("odds_ratio:Q", format=".2f")]
+                ).properties(height=320)
+
+                st.markdown("**Feature effects (Odds Ratios)** — values > 1 increase odds of target=1; < 1 decrease.")
+                st.altair_chart(coef_chart, use_container_width=True)
+
+                # ---- 2) Probability distribution (descriptive) ----
+                st.markdown("---")
+                st.markdown("**Predicted probability distribution** (descriptive)")
+                prob_df = pd.DataFrame({"p1": probs, "target": y})
+                prob_chart = alt.Chart(prob_df).mark_bar(opacity=0.7).encode(
+                    x=alt.X("p1:Q", bin=alt.Bin(maxbins=40), title="Predicted P(target=1)"),
+                    y=alt.Y("count():Q", title="Count"),
+                    color=alt.Color("target:N", title="target")
+                ).properties(height=320)
+                st.altair_chart(prob_chart, use_container_width=True)
+
+                # ---- 3) Probability vs one feature (binned mean) ----
+                st.markdown("---")
+                st.markdown(f"**Predicted probability vs `{one_x_for_plot}`** (binned)")
+                plot_df = dtrain[[one_x_for_plot]].copy()
+                plot_df["p1"] = probs
+                # bin into ~30 bins
+                bins = np.linspace(plot_df[one_x_for_plot].min(), plot_df[one_x_for_plot].max(), 31)
+                plot_df["bin"] = pd.cut(plot_df[one_x_for_plot], bins=bins, include_lowest=True)
+                line_df = plot_df.groupby("bin", observed=False).agg(
+                    x=("".join([one_x_for_plot]), "mean"),
+                    p=("p1", "mean"),
+                    n=("p1", "size")
+                ).dropna()
+
+                line = alt.Chart(line_df).mark_line(point=True).encode(
+                    x=alt.X("x:Q", title=one_x_for_plot),
+                    y=alt.Y("p:Q", title="Mean P(target=1)"),
+                    size=alt.Size("n:Q", title="bin size", legend=None),
+                    tooltip=[alt.Tooltip("x:Q", format=".2f"), alt.Tooltip("p:Q", format=".3f"), "n:Q"]
+                ).properties(height=320)
+                st.altair_chart(line, use_container_width=True)
+
+                st.caption("These visuals are exploratory only (no performance metrics).")
+
+            except Exception as e:
+                st.info("Scikit-learn is required for this tab. If you’re on a minimal environment, add `scikit-learn` to requirements.")
+                st.exception(e)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
 # -------------------- Footer --------------------
 st.write("")
 st.markdown(
     """
     <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
-      Interactive Streamlit dashboard • Year slider + filters drive all charts • Target-only dataset ✅
+      Interactive Streamlit dashboard • Year slider + filters • Logit interpretation (no eval) ✅
     </div>
     """,
     unsafe_allow_html=True
