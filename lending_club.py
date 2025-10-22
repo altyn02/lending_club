@@ -1,4 +1,6 @@
 # app.py — Lending Club Dashboard (auto-load from local or GitHub)
+# Uses: early_pool_balanced_15k_each.csv
+# Missingness section removed (dataset is clean)
 
 import os
 import tempfile
@@ -65,8 +67,7 @@ DATA_URL = "https://github.com/altyn02/lending_club/releases/download/15k_lendin
 
 @st.cache_data(show_spinner=True)
 def _download_csv_to_tmp(url: str) -> str:
-    fd, tmp = tempfile.mkstemp(suffix=".csv")
-    os.close(fd)
+    fd, tmp = tempfile.mkstemp(suffix=".csv"); os.close(fd)
     with requests.get(url, stream=True, timeout=300) as r:
         r.raise_for_status()
         with open(tmp, "wb") as f:
@@ -85,6 +86,7 @@ def load_data(local_path: Path, url: str) -> pd.DataFrame:
 df_full = load_data(DATA_PATH, DATA_URL)
 
 # -------------------- Light Cleaning --------------------
+# Convert percent-like columns if needed
 if "int_rate" in df_full and not pd.api.types.is_numeric_dtype(df_full["int_rate"]):
     df_full["int_rate"] = (
         df_full["int_rate"].astype(str).str.replace("%","", regex=False)
@@ -97,6 +99,7 @@ if "revol_util" in df_full and not pd.api.types.is_numeric_dtype(df_full["revol_
         .str.extract(r"([-+]?\d*\.?\d+)", expand=False).astype(float)
     )
 
+# Parse issue date if present
 if "issue_d" in df_full:
     issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce", format="%b-%Y")
     if issue_dt.isna().all():
@@ -105,7 +108,7 @@ if "issue_d" in df_full:
     if df_full["issue_d"].notna().any():
         df_full["issue_year"] = df_full["issue_d"].dt.year
 
-# Sampling for performance
+# Sampling (dataset is small/balanced, but keep pattern)
 SAMPLE_N = 200_000
 df = df_full.sample(min(len(df_full), SAMPLE_N), random_state=42)
 
@@ -114,12 +117,20 @@ total_rows = len(df_full)
 total_cols = df_full.shape[1]
 date_min = df_full["issue_d"].min().date().isoformat() if "issue_d" in df_full and df_full["issue_d"].notna().any() else "—"
 date_max = df_full["issue_d"].max().date().isoformat() if "issue_d" in df_full and df_full["issue_d"].notna().any() else "—"
-target_col = "loan_status" if "loan_status" in df_full.columns else None
+
+# Target detection: prefer loan_status if present; else try 'target' 0/1
 bad_ratio = "—"
-if target_col:
-    lc = df_full[target_col].astype(str).str.lower()
+if "loan_status" in df_full.columns:
+    lc = df_full["loan_status"].astype(str).str.lower()
     bad = lc.isin(["charged off","default","late (31-120 days)"]).mean()
     bad_ratio = f"{bad*100:.1f}%"
+elif "target" in df_full.columns:
+    # Generic: treat 1 as "bad" if distribution looks balanced (your sample is balanced 15k each)
+    try:
+        bad = (df_full["target"] == 1).mean()
+        bad_ratio = f"{bad*100:.1f}%"
+    except Exception:
+        pass
 
 k1, k2, k3, k4 = st.columns(4)
 with k1:
@@ -169,7 +180,7 @@ with r1c2:
         st.caption("Column 'int_rate' not found.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Row 2: Status by Grade | Missingness
+# Row 2: Status by Grade | Top Purposes (replaces Missingness)
 r2c1, r2c2 = st.columns((1.25, 1))
 with r2c1:
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -184,22 +195,46 @@ with r2c1:
             tooltip=["grade","status","count"]
         ).properties(height=320)
         st.altair_chart(bar, use_container_width=True)
+    elif "grade" in df.columns and "target" in df.columns:
+        # If only target exists
+        pv = df.groupby(["grade","target"]).size().reset_index(name="count")
+        pv["status"] = pv["target"].map({1:"Bad", 0:"Good"}).fillna(pv["target"].astype(str))
+        bar = alt.Chart(pv).mark_bar().encode(
+            x=alt.X("grade:N", sort=alt.SortField("grade", order="ascending")),
+            y="count:Q",
+            color="status:N",
+            tooltip=["grade","status","count"]
+        ).properties(height=320)
+        st.altair_chart(bar, use_container_width=True)
     else:
-        st.caption("Need columns: loan_status & grade.")
+        st.caption("Need columns: grade + (loan_status or target).")
     st.markdown('</div>', unsafe_allow_html=True)
 
 with r2c2:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("#### Missingness (Top 12)")
-    miss = df.isna().mean().sort_values(ascending=False).head(12).rename("missing_rate").reset_index()
-    miss["missing_%"] = (miss["missing_rate"]*100).round(1)
-    miss = miss.rename(columns={"index":"column"})
-    miss_chart = alt.Chart(miss).mark_bar().encode(
-        x=alt.X("missing_%:Q", title="Missing (%)"),
-        y=alt.Y("column:N", sort="-x", title=""),
-        tooltip=["column","missing_%"]
-    ).properties(height=320)
-    st.altair_chart(miss_chart, use_container_width=True)
+    if "purpose" in df.columns:
+        st.markdown("#### Top 10 Loan Purposes")
+        top_p = df["purpose"].fillna("Unknown").value_counts().head(10).reset_index()
+        top_p.columns = ["purpose","count"]
+        purpose_chart = alt.Chart(top_p).mark_bar().encode(
+            x=alt.X("purpose:N", sort='-y', title="Purpose"),
+            y=alt.Y("count:Q", title="Loans"),
+            tooltip=["purpose","count"]
+        ).properties(height=320)
+        st.altair_chart(purpose_chart, use_container_width=True)
+    else:
+        st.markdown("#### Term Distribution")
+        if "term" in df.columns:
+            term_counts = df["term"].astype(str).value_counts().reset_index()
+            term_counts.columns = ["term","count"]
+            term_chart = alt.Chart(term_counts).mark_bar().encode(
+                x=alt.X("term:N", sort='-y', title="Term"),
+                y=alt.Y("count:Q", title="Count"),
+                tooltip=["term","count"]
+            ).properties(height=320)
+            st.altair_chart(term_chart, use_container_width=True)
+        else:
+            st.caption("No 'purpose' or 'term' column available.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # -------------------- Footer --------------------
@@ -207,7 +242,7 @@ st.write("")
 st.markdown(
     """
     <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
-      Dashboard built with Streamlit — auto-loads Lending Club dataset 📊
+      Dashboard built with Streamlit — auto-loads balanced early-pool dataset 📊
     </div>
     """,
     unsafe_allow_html=True
