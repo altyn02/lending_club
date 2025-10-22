@@ -1,4 +1,4 @@
-# app.py — Lending Club Dashboard (target-only, issue_year filter + curated EDA + Logit visuals)
+# app.py — Lending Club Dashboard (target-only, issue_year filter + auto-grid EDA + Logit visuals)
 # Dataset: early_pool_balanced_15k_each.csv
 
 import os
@@ -149,8 +149,11 @@ total_rows = len(df)
 total_cols = df.shape[1]
 bad_ratio = "—"
 if "target" in df.columns:
-    bad = (df["target"].astype(int) == 1).mean()
-    bad_ratio = f"{bad*100:.1f}%"
+    try:
+        bad = (pd.to_numeric(df["target"], errors="coerce").fillna(0).astype(int) == 1).mean()
+        bad_ratio = f"{bad*100:.1f}%"
+    except Exception:
+        pass
 
 k1, k2, k3 = st.columns(3)
 with k1:
@@ -162,19 +165,26 @@ with k3:
 
 st.write("")
 
-# -------------------- Featured variables + Suitability (fast EDA) --------------------
+# -------------------- Featured & Suitability helpers --------------------
 from pandas.api.types import is_numeric_dtype
 
-K_DEFAULT = 6
-DOWNSAMPLE_MAX = 50_000
+DOWNSAMPLE_MAX = 50_000  # change to 0 to disable
 
-def get_featured_vars(df, k=K_DEFAULT):
+def get_featured_vars(df, k=6):
+    """Robust ranking by |corr(target, X)| when target can be coerced numeric; else fallback."""
     numeric_pool = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
-    if "target" in df.columns and len(numeric_pool) > 0:
-        num_df = df[["target"] + numeric_pool].dropna()
-        if not num_df.empty:
-            corrs = num_df.corr(numeric_only=True)["target"].drop("target", errors="ignore").abs().sort_values(ascending=False)
-            top_num = [c for c in corrs.index[:k]]
+
+    target_num = None
+    if "target" in df.columns:
+        t = pd.to_numeric(df["target"], errors="coerce")
+        if t.notna().sum() >= 2 and t.nunique(dropna=True) >= 2:
+            target_num = t
+
+    if target_num is not None and numeric_pool:
+        tmp = pd.concat([target_num.rename("target_num"), df[numeric_pool]], axis=1).dropna()
+        if not tmp.empty:
+            cabs = tmp.corr(numeric_only=True)["target_num"].drop("target_num", errors="ignore").abs()
+            top_num = cabs.sort_values(ascending=False).index.tolist()[:k]
         else:
             top_num = numeric_pool[:k]
     else:
@@ -184,15 +194,12 @@ def get_featured_vars(df, k=K_DEFAULT):
     top_cat = [c for c in cat_candidates if c in df.columns]
     return top_num, top_cat
 
-def continuous_numeric_cols(df: pd.DataFrame, min_unique: int = 10, exclude: set = None) -> list:
+def continuous_numeric_cols(df: pd.DataFrame, min_unique: int = 10, exclude: set | None = None) -> list:
     exclude = exclude or set()
-    out = []
-    for c in df.columns:
-        if c in exclude: 
-            continue
-        if is_numeric_dtype(df[c]) and df[c].dropna().nunique() >= min_unique:
-            out.append(c)
-    return out
+    return [
+        c for c in df.columns
+        if c not in exclude and is_numeric_dtype(df[c]) and df[c].dropna().nunique() >= min_unique
+    ]
 
 def categorical_cols(df: pd.DataFrame, max_card: int = 30, include_target_if_cat=True) -> list:
     cats = []
@@ -211,17 +218,16 @@ def categorical_cols(df: pd.DataFrame, max_card: int = 30, include_target_if_cat
                 cats = ["target"] + cats
     return list(dict.fromkeys(cats))
 
-def numeric_cols(df: pd.DataFrame, exclude: set = None) -> list:
+def numeric_cols(df: pd.DataFrame, exclude: set | None = None) -> list:
     exclude = exclude or set()
     return [c for c in df.columns if c not in exclude and is_numeric_dtype(df[c])]
 
-# Controls (sidebar)
+# Sidebar EDA control (only downsample to keep it fast)
 with st.sidebar:
     st.subheader("EDA Controls")
-    k_choice = st.slider("Top-K numeric (for EDA defaults)", 3, 12, K_DEFAULT)
     downsample_rows = st.number_input("Downsample rows (0 = off)", min_value=0, value=DOWNSAMPLE_MAX, step=5000)
 
-FEATURED_NUM, FEATURED_CAT = get_featured_vars(df, k=k_choice)
+FEATUREED_NUM, FEATURED_CAT = get_featured_vars(df, k=6)
 
 # Downsample for snappy charts (EDA only)
 df_eda = df
@@ -237,200 +243,207 @@ BOX_X_CAT  = categorical_cols(df_eda, max_card=30, include_target_if_cat=True)
 CORR_NUM   = numeric_cols(df_eda, exclude=set())  # allow target if numeric
 
 # -------------------- Tabs --------------------
-tab_hist, tab_box, tab_density, tab_corr, tab_logit = st.tabs([
-    "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)", "🧮 Correlation Heatmap", "🧠 Logit"
+tab_hist, tab_box, tab_density, tab_corr, tab_pair, tab_logit = st.tabs([
+    "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)",
+    "🧮 Correlation Heatmap", "🔗 Pairwise (Sample)", "🧠 Logit"
 ])
 
-# ========== Histograms (single or grid) ==========
+# ========== Histograms (auto-grid, no pickers) ==========
 with tab_hist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Histogram (suitable variables only)")
-
+    st.subheader("Histogram — All suitable numeric variables")
     if not HIST_NUM:
-        st.info("No suitable continuous numeric columns for histograms.")
+        st.info("No suitable numeric columns.")
     else:
-        grid = st.checkbox("Grid mode (show multiple variables)", value=True, key="hist_grid")
-        bins = st.slider("Bins", 10, 80, 40, 5, key="hist_bins")
-
-        if grid:
-            # choose several variables for the grid
-            chosen = st.multiselect(
-                "Variables (up to 12 recommended)",
-                options=HIST_NUM,
-                default=HIST_NUM[:min(9, len(HIST_NUM))],
-                key="hist_vars_grid"
-            )
-            if not chosen:
-                st.info("Pick at least one variable.")
-            else:
-                src = df_eda[chosen + (["target"] if "target" in df_eda.columns else [])].dropna()
-                chart = (
-                    alt.Chart(src)
-                    .transform_fold(chosen, as_=["variable", "value"])
-                    .mark_bar(opacity=0.7)
-                    .encode(
-                        x=alt.X("value:Q", bin=alt.Bin(maxbins=bins), title=None),
-                        y=alt.Y("count():Q", title="Count"),
-                        color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
-                        facet=alt.Facet("variable:N", columns=3, title="")
-                    )
-                    .properties(height=160)
-                )
-                st.altair_chart(chart, use_container_width=True)
-        else:
-            col = st.selectbox("Variable", options=HIST_NUM, index=0, key="hist_one")
-            src = df_eda[[col] + (["target"] if "target" in df_eda.columns else [])].dropna()
-            chart = alt.Chart(src).mark_bar(opacity=0.7).encode(
-                x=alt.X(f"{col}:Q", bin=alt.Bin(maxbins=bins), title=col),
+        bins = st.slider("Bins", 10, 80, 40, 5, key="hist_bins_auto")
+        src = df_eda[HIST_NUM + (["target"] if "target" in df_eda.columns else [])].dropna()
+        chart = (
+            alt.Chart(src)
+            .transform_fold(HIST_NUM, as_=["variable", "value"])
+            .mark_bar(opacity=0.7)
+            .encode(
+                x=alt.X("value:Q", bin=alt.Bin(maxbins=bins), title=None),
                 y=alt.Y("count():Q", title="Count"),
                 color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
-                tooltip=[col, "count()"]
-            ).properties(height=340)
-            st.altair_chart(chart, use_container_width=True)
-
+                facet=alt.Facet("variable:N", columns=3, title="")
+            )
+            .properties(height=160)
+        )
+        st.altair_chart(chart, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
-# ========== Boxplots (single or grid) ==========
+
+# ========== Boxplots (auto-grid, no pickers) ==========
 with tab_box:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Boxplot (numeric Y vs categorical X)")
-
+    st.subheader("Boxplot — All suitable numeric variables")
     if not BOX_Y_NUM or not BOX_X_CAT:
         st.info("Need at least one continuous numeric (Y) and one categorical (X).")
     else:
-        x_col = st.selectbox("Group by (categorical X)", options=BOX_X_CAT, index=0, key="box_x_grid")
-        grid = st.checkbox("Grid mode (multiple Y variables)", value=True, key="box_grid")
-
-        if grid:
-            y_vars = st.multiselect(
-                "Y variables (numeric, up to 12 recommended)",
-                options=BOX_Y_NUM,
-                default=BOX_Y_NUM[:min(9, len(BOX_Y_NUM))],
-                key="box_y_vars"
-            )
-            if not y_vars:
-                st.info("Pick at least one Y.")
-            else:
-                src = df_eda[[x_col] + y_vars].dropna()
-                melt = src.melt(id_vars=[x_col], value_vars=y_vars, var_name="variable", value_name="value")
-                chart = (
-                    alt.Chart(melt)
-                    .mark_boxplot()
-                    .encode(
-                        x=alt.X(f"{x_col}:N", title=x_col),
-                        y=alt.Y("value:Q", title=None),
-                        color=alt.Color(f"{x_col}:N", legend=None),
-                        facet=alt.Facet("variable:N", columns=3, title="")
-                    )
-                    .properties(height=160)
-                )
-                st.altair_chart(chart, use_container_width=True)
-        else:
-            y_col = st.selectbox("Y (numeric)", options=BOX_Y_NUM, index=0, key="box_y_one")
-            src = df_eda[[x_col, y_col]].dropna()
-            chart = alt.Chart(src).mark_boxplot().encode(
+        x_col = "target" if "target" in BOX_X_CAT else BOX_X_CAT[0]
+        src = df_eda[[x_col] + BOX_Y_NUM].dropna()
+        melt = src.melt(id_vars=[x_col], value_vars=BOX_Y_NUM, var_name="variable", value_name="value")
+        chart = (
+            alt.Chart(melt)
+            .mark_boxplot()
+            .encode(
                 x=alt.X(f"{x_col}:N", title=x_col),
-                y=alt.Y(f"{y_col}:Q", title=y_col),
-                color=alt.Color(f"{x_col}:N", legend=None)
-            ).properties(height=340)
-            st.altair_chart(chart, use_container_width=True)
-
+                y=alt.Y("value:Q", title=None),
+                color=alt.Color(f"{x_col}:N", legend=None),
+                facet=alt.Facet("variable:N", columns=3, title="")
+            )
+            .properties(height=160)
+        )
+        st.altair_chart(chart, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ========== Density (KDE; single or grid) ==========
+# ========== Density (KDE; auto-grid, no pickers) ==========
 with tab_density:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Density (KDE) — suitable continuous variables")
-
+    st.subheader("Density (KDE) — All suitable numeric variables")
     if not DENS_NUM:
         st.info("No suitable continuous numeric columns for density.")
     else:
-        grid = st.checkbox("Grid mode (show multiple variables)", value=True, key="dens_grid")
-
-        if grid:
-            chosen = st.multiselect(
-                "Variables (up to 12 recommended)",
-                options=DENS_NUM,
-                default=DENS_NUM[:min(9, len(DENS_NUM))],
-                key="dens_vars_grid"
-            )
-            if not chosen:
-                st.info("Pick at least one variable.")
-            else:
-                src = df_eda[chosen + (["target"] if "target" in df_eda.columns else [])].dropna()
-                base = alt.Chart(src).transform_fold(chosen, as_=["variable", "value"])
-
-                if "target" in src.columns:
-                    chart = base.transform_density(
-                        "value", groupby=["variable", "target"], as_=["value", "density"]
-                    ).mark_area(opacity=0.5).encode(
-                        x=alt.X("value:Q", title=None),
-                        y="density:Q",
-                        color="target:N",
-                        facet=alt.Facet("variable:N", columns=3, title="")
-                    ).properties(height=160)
-                else:
-                    chart = base.transform_density(
-                        "value", groupby=["variable"], as_=["value", "density"]
-                    ).mark_area(opacity=0.6).encode(
-                        x=alt.X("value:Q", title=None),
-                        y="density:Q",
-                        facet=alt.Facet("variable:N", columns=3, title="")
-                    ).properties(height=160)
-
-                st.altair_chart(chart, use_container_width=True)
+        src = df_eda[DENS_NUM + (["target"] if "target" in df_eda.columns else [])].dropna()
+        base = alt.Chart(src).transform_fold(DENS_NUM, as_=["variable", "value"])
+        if "target" in src.columns:
+            chart = base.transform_density(
+                "value", groupby=["variable", "target"], as_=["value", "density"]
+            ).mark_area(opacity=0.5).encode(
+                x=alt.X("value:Q", title=None),
+                y="density:Q",
+                color="target:N",
+                facet=alt.Facet("variable:N", columns=3, title="")
+            ).properties(height=160)
         else:
-            col = st.selectbox("Variable", options=DENS_NUM, index=0, key="dens_one")
-            src = df_eda[[col] + (["target"] if "target" in df_eda.columns else [])].dropna()
-            if "target" in src.columns:
-                dens = alt.Chart(src).transform_density(
-                    col, groupby=["target"], as_=[col, "density"]
-                ).mark_area(opacity=0.5).encode(
-                    x=alt.X(f"{col}:Q", title=col),
-                    y="density:Q",
-                    color="target:N"
-                ).properties(height=340)
-            else:
-                dens = alt.Chart(src).transform_density(
-                    col, as_=[col, "density"]
-                ).mark_area(opacity=0.6).encode(
-                    x=alt.X(f"{col}:Q", title=col),
-                    y="density:Q"
-                ).properties(height=340)
-            st.altair_chart(dens, use_container_width=True)
-
+            chart = base.transform_density(
+                "value", groupby=["variable"], as_=["value", "density"]
+            ).mark_area(opacity=0.6).encode(
+                x=alt.X("value:Q", title=None),
+                y="density:Q",
+                facet=alt.Facet("variable:N", columns=3, title="")
+            ).properties(height=160)
+        st.altair_chart(chart, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-
-# ========== Correlation Heatmap ==========
+# ========== Correlation Heatmap (preset or manual) ==========
 with tab_corr:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Correlation Heatmap (numeric only)")
-    if len(CORR_NUM) < 2:
+    num_df = df_eda.select_dtypes(include=[np.number]).copy()
+    if num_df.empty or num_df.shape[1] < 2:
         st.info("Not enough numeric columns for a correlation heatmap.")
     else:
-        options = CORR_NUM.copy()
-        if "target" in df_eda.columns and is_numeric_dtype(df_eda["target"]):
-            options = ["target"] + options
-        default_features = options[:min(10, len(options))]
-        chosen = st.multiselect(
-            "Numeric features",
-            options=options,
-            default=default_features,
-            help="Limit to a small set (<= 12) for readability."
-        )
+        numeric_options = list(num_df.columns)
+        if "target" in numeric_options:
+            numeric_options.remove("target")
+            numeric_options = ["target"] + numeric_options
+
+        preset = st.radio("Feature selection", ["Top by |corr with target|", "Manual"], horizontal=True, key="corr_mode")
+        cap = st.slider("Max features to display", 3, 18, 12, key="corr_cap")
+
+        if preset == "Top by |corr with target|":
+            if "target" in num_df.columns and num_df.shape[1] > 1:
+                cabs = num_df.corr(numeric_only=True)["target"].drop(labels=["target"], errors="ignore").abs()
+                ranked = cabs.sort_values(ascending=False).index.tolist()
+                chosen = ["target"] + ranked[: max(0, cap - 1)]
+                st.caption(f"Auto-selected: {', '.join(chosen[:min(10,len(chosen))])}{'…' if len(chosen)>10 else ''}")
+            else:
+                chosen = numeric_options[:cap]
+        else:
+            chosen = st.multiselect(
+                "Pick numeric features",
+                options=numeric_options,
+                default=(numeric_options[:cap]),
+                help="Keep it ≤ 18 for readability.",
+                key="corr_manual"
+            )
+
+        chosen = [c for c in chosen if c in num_df.columns]
         if len(chosen) < 2:
             st.info("Pick at least two features.")
         else:
-            cmat = df_eda[chosen].corr(numeric_only=True)
+            order_mode = st.selectbox(
+                "Order axes by",
+                ["Selected order", "Alphabetical", "By |corr with target| (if available)"],
+                index=2 if "target" in chosen else 0,
+                key="corr_order"
+            )
+            ordered = chosen[:]
+            if order_mode == "Alphabetical":
+                ordered = sorted(chosen)
+            elif order_mode == "By |corr with target| (if available)" and "target" in chosen:
+                cabs2 = num_df[chosen].corr(numeric_only=True)["target"].abs().sort_values(ascending=False)
+                ordered = ["target"] + [c for c in cabs2.index if c != "target"]
+
+            cmat = num_df[ordered].corr(numeric_only=True)
             corr_df = cmat.reset_index().melt("index")
             corr_df.columns = ["feature_x", "feature_y", "corr"]
+
             heat = alt.Chart(corr_df).mark_rect().encode(
-                x=alt.X("feature_x:O", title="", sort=chosen),
-                y=alt.Y("feature_y:O", title="", sort=chosen),
-                color=alt.Color("corr:Q", scale=alt.Scale(scheme="blueorange", domain=[-1,1])),
-                tooltip=["feature_x","feature_y", alt.Tooltip("corr:Q", format=".2f")]
+                x=alt.X("feature_x:O", title="", sort=ordered),
+                y=alt.Y("feature_y:O", title="", sort=ordered),
+                color=alt.Color("corr:Q", scale=alt.Scale(scheme="blueorange", domain=[-1, 1])),
+                tooltip=["feature_x", "feature_y", alt.Tooltip("corr:Q", format=".2f")]
             ).properties(height=420)
-            st.altair_chart(heat, use_container_width=True)
+
+            show_labels = st.checkbox("Show correlation values", value=False, key="corr_labels")
+            if show_labels:
+                labels = alt.Chart(corr_df).mark_text(baseline="middle").encode(
+                    x=alt.X("feature_x:O", sort=ordered),
+                    y=alt.Y("feature_y:O", sort=ordered),
+                    text=alt.Text("corr:Q", format=".2f"),
+                    color=alt.condition("datum.corr > 0.5 || datum.corr < -0.5", alt.value("white"), alt.value("black"))
+                )
+                st.altair_chart(heat + labels, use_container_width=True)
+            else:
+                st.altair_chart(heat, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ========== Pairwise (scatter-matrix style; auto) ==========
+with tab_pair:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Pairwise Relationships (Sample, auto)")
+    PAIR_NUM = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
+    if len(PAIR_NUM) < 2:
+        st.info("Need at least two numeric columns.")
+    else:
+        # choose top variables by |corr(target, X)| if possible
+        top_by_corr, _ = get_featured_vars(df, k=min(6, len(PAIR_NUM)))
+        chosen = top_by_corr if top_by_corr else PAIR_NUM[:min(4, len(PAIR_NUM))]
+        sample_n = min(5000, len(df))
+        src = df.sample(sample_n, random_state=42) if len(df) > sample_n else df.copy()
+        src = src[chosen].dropna()
+
+        charts = []
+        for i, ycol in enumerate(chosen):
+            row_charts = []
+            for j, xcol in enumerate(chosen):
+                if i == j:
+                    c = (
+                        alt.Chart(src)
+                        .transform_density(xcol, as_=[xcol, "density"])
+                        .mark_area(opacity=0.5)
+                        .encode(x=alt.X(f"{xcol}:Q", title=None), y="density:Q")
+                        .properties(height=150, width=150)
+                    )
+                elif i > j:
+                    c = (
+                        alt.Chart(src)
+                        .mark_circle(size=20, opacity=0.6)
+                        .encode(
+                            x=alt.X(f"{xcol}:Q", title=None),
+                            y=alt.Y(f"{ycol}:Q", title=None),
+                            tooltip=[xcol, ycol]
+                        )
+                        .properties(height=150, width=150)
+                    )
+                else:
+                    c = alt.Chart(pd.DataFrame({"x":[0],"y":[0]})).mark_rect(opacity=0).properties(height=150, width=150)
+                row_charts.append(c)
+            charts.append(alt.hconcat(*row_charts, spacing=6))
+        grid = alt.vconcat(*charts, spacing=6).resolve_scale(color="independent").properties(title="Pairwise Relationships (Sample)")
+        st.altair_chart(grid, use_container_width=True)
+        st.caption(f"Variables shown: {', '.join(chosen)}  •  Sample: {len(src):,} rows")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ========== Logit (focused UI, no performance evaluation) ==========
@@ -440,14 +453,11 @@ st.subheader("Logistic Regression — Interpret the model")
 if "target" not in df.columns:
     st.info("No 'target' column found.")
 else:
-    # ---------- 1) Choose (or auto-pick) features ----------
     numeric_pool = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
     if len(numeric_pool) == 0:
         st.info("No numeric features available for logit.")
     else:
-        default_pool = [c for c in ["int_rate","dti","revol_util","loan_amnt","annual_inc"] if c in numeric_pool]
-        if not default_pool:
-            default_pool = numeric_pool[:8]
+        default_pool = [c for c in ["int_rate","dti","revol_util","loan_amnt","annual_inc"] if c in numeric_pool] or numeric_pool[:8]
 
         with st.expander("⚙️ Model settings", expanded=False):
             C = st.slider("Regularization strength (C)", 0.01, 10.0, 1.0, 0.01)
@@ -463,7 +473,7 @@ else:
             base_feats = feats_override if feats_override else default_pool
             dtrain0 = df[["target"] + base_feats].dropna().copy()
             X0 = dtrain0[base_feats].values
-            y0 = dtrain0["target"].astype(int).values
+            y0 = pd.to_numeric(dtrain0["target"], errors="coerce").astype(int).values
 
             base_pipe = Pipeline([
                 ("scaler", StandardScaler()),
@@ -478,7 +488,7 @@ else:
 
             dtrain = df[["target"] + feats].dropna().copy()
             X = dtrain[feats].values
-            y = dtrain["target"].astype(int).values
+            y = pd.to_numeric(dtrain["target"], errors="coerce").astype(int).values
 
             pipe = Pipeline([
                 ("scaler", StandardScaler()),
@@ -495,18 +505,11 @@ else:
             st.markdown('</div>', unsafe_allow_html=True)
             st.stop()
 
-        # ---------- 2) Visual type (simple radio) ----------
-        visual = st.radio(
-            "Visual type",
-            ["Odds-ratio forest", "Probability vs one feature", "Interaction heatmap"],
-            horizontal=True
-        )
+        visual = st.radio("Visual type", ["Odds-ratio forest", "Probability vs one feature", "Interaction heatmap"], horizontal=True)
 
-        # ---------- 3a) Odds-ratio forest ----------
         if visual == "Odds-ratio forest":
             coefs = clf.coef_.ravel()
             odds = np.exp(coefs)
-
             ci_low, ci_high = None, None
             try:
                 import statsmodels.api as sm
@@ -524,46 +527,32 @@ else:
 
             coef_df = pd.DataFrame({"feature": feats, "odds_ratio": odds}).sort_values("odds_ratio", ascending=False)
             if ci_low is not None:
-                coef_df["ci_low"] = ci_low
-                coef_df["ci_high"] = ci_high
+                coef_df["ci_low"] = ci_low; coef_df["ci_high"] = ci_high
 
             base = alt.Chart(coef_df).encode(y=alt.Y("feature:N", sort="-x", title=""))
             bars = base.mark_bar(size=10).encode(
                 x=alt.X("odds_ratio:Q", title="Odds Ratio (exp(coef))"),
                 tooltip=["feature", alt.Tooltip("odds_ratio:Q", format=".2f")]
             )
-            chart = bars
-            if "ci_low" in coef_df:
-                rules = base.mark_rule().encode(
-                    x="ci_low:Q", x2="ci_high:Q",
-                    tooltip=[
-                        "feature",
-                        alt.Tooltip("odds_ratio:Q", format=".2f"),
-                        alt.Tooltip("ci_low:Q", format=".2f"),
-                        alt.Tooltip("ci_high:Q", format=".2f"),
-                    ]
-                )
-                chart = bars + rules
-
+            chart = bars if "ci_low" not in coef_df else bars + base.mark_rule().encode(
+                x="ci_low:Q", x2="ci_high:Q",
+                tooltip=["feature", alt.Tooltip("odds_ratio:Q", format=".2f"),
+                         alt.Tooltip("ci_low:Q", format=".2f"), alt.Tooltip("ci_high:Q", format=".2f")]
+            )
             st.markdown("**Feature effects (Odds Ratios)** — > 1 increases odds of target=1; < 1 decreases.")
             st.altair_chart(chart.properties(height=360), use_container_width=True)
 
-        # ---------- 3b) Probability vs one feature ----------
         elif visual == "Probability vs one feature":
             # prefer continuous variables among selected features
             feasible = [f for f in feats if f in HIST_NUM] or feats
-            one_x = st.selectbox("Feature", options=feasible, index=0)
+            one_x = feasible[0]
             plot_df = dtrain[[one_x]].copy()
             plot_df["p1"] = probs
-
             bins = np.linspace(plot_df[one_x].min(), plot_df[one_x].max(), 31)
             plot_df["bin"] = pd.cut(plot_df[one_x], bins=bins, include_lowest=True)
             line_df = plot_df.groupby("bin", observed=False).agg(
-                x=(one_x, "mean"),
-                p=("p1", "mean"),
-                n=("p1", "size")
+                x=(one_x, "mean"), p=("p1", "mean"), n=("p1", "size")
             ).dropna()
-
             line = alt.Chart(line_df).mark_line(point=True).encode(
                 x=alt.X("x:Q", title=one_x),
                 y=alt.Y("p:Q", title="Mean P(target=1)"),
@@ -572,18 +561,11 @@ else:
             ).properties(height=360)
             st.altair_chart(line, use_container_width=True)
 
-        # ---------- 3c) Interaction heatmap ----------
         else:
             if len(feats) < 2:
                 st.info("Need at least two features for an interaction.")
             else:
-                c1, c2 = st.columns(2)
-                with c1:
-                    f1 = st.selectbox("Feature X", options=feats, index=0, key="ix1")
-                with c2:
-                    f2 = st.selectbox("Feature Y", options=[f for f in feats if f != f1],
-                                      index=0 if len(feats) < 3 else 1, key="ix2")
-
+                f1, f2 = feats[0], feats[1]
                 tmp = dtrain[[f1, f2]].copy()
                 tmp["p1"] = probs
                 bx = pd.cut(tmp[f1], bins=20, include_lowest=True)
@@ -594,17 +576,13 @@ else:
                 def mid(iv):
                     try: return (iv.left + iv.right) / 2
                     except Exception: return np.nan
-                grid["x"] = grid[f1].apply(mid)
-                grid["y"] = grid[f2].apply(mid)
-                grid = grid.dropna()
+                grid["x"] = grid[f1].apply(mid); grid["y"] = grid[f2].apply(mid); grid = grid.dropna()
 
                 heat = alt.Chart(grid).mark_rect().encode(
                     x=alt.X("x:Q", title=f1),
                     y=alt.Y("y:Q", title=f2),
                     color=alt.Color("p:Q", title="Mean P(target=1)"),
-                    tooltip=[alt.Tooltip("x:Q", format=".2f"),
-                             alt.Tooltip("y:Q", format=".2f"),
-                             alt.Tooltip("p:Q", format=".3f")]
+                    tooltip=[alt.Tooltip("x:Q", format=".2f"), alt.Tooltip("y:Q", format=".2f"), alt.Tooltip("p:Q", format=".3f")]
                 ).properties(height=420)
                 st.altair_chart(heat, use_container_width=True)
 
@@ -617,7 +595,7 @@ st.write("")
 st.markdown(
     """
     <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
-      Interactive Streamlit dashboard • Year slider + filters • Curated EDA • Logit interpretation ✅
+      Lending Club Camila and Altynsara ✅
     </div>
     """,
     unsafe_allow_html=True
