@@ -1,4 +1,4 @@
-# app.py — Lending Club Dashboard (target-only, interactive filters)
+# app.py — Lending Club Dashboard (target-only, issue_year filter)
 # Dataset: early_pool_balanced_15k_each.csv
 
 import os
@@ -42,7 +42,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 # -------------------- HERO --------------------
 TITLE = "Lending Club Credit Dashboard"
-SUBTITLE = "Explore distributions, relationships, and correlations in your balanced early-pool sample."
+SUBTITLE = "Explore distributions, relationships, and correlations in lending club"
 LOGO_URL = "https://github.com/altyn02/lending_club/releases/download/lending_photo/lending.webp"
 
 st.markdown(
@@ -96,57 +96,58 @@ for col in ["int_rate", "revol_util", "dti"]:
     if col in df_full and not pd.api.types.is_numeric_dtype(df_full[col]):
         df_full[col] = to_float_pct(df_full[col])
 
-# Parse issue date if present (for filtering)
-if "issue_d" in df_full.columns:
-    issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce", format="%b-%Y")
-    if issue_dt.isna().all():
-        issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce")
-    df_full["issue_d"] = issue_dt
-    if df_full["issue_d"].notna().any():
-        df_full["issue_year"] = df_full["issue_d"].dt.year
+# Ensure we have issue_year; derive from issue_d if needed
+if "issue_year" not in df_full.columns:
+    if "issue_d" in df_full.columns:
+        issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce", format="%b-%Y")
+        if issue_dt.isna().all():
+            issue_dt = pd.to_datetime(df_full["issue_d"], errors="coerce")
+        df_full["issue_year"] = issue_dt.dt.year
+# If still missing, leave it out (filters/charts adapt)
 
-# -------------------- Sidebar Filters --------------------
+# -------------------- Sidebar Filters (issue_year slider) --------------------
 with st.sidebar:
     st.subheader("Filters")
 
-    # Date range filter (if issue_d exists and has values)
-    if "issue_d" in df_full.columns and df_full["issue_d"].notna().any():
-        dmin = pd.to_datetime(df_full["issue_d"].min()).date()
-        dmax = pd.to_datetime(df_full["issue_d"].max()).date()
-        date_range = st.date_input(
-            "Issue date range",
-            value=(dmin, dmax)
+    year_range = None
+    if "issue_year" in df_full.columns and df_full["issue_year"].notna().any():
+        min_year = int(pd.to_numeric(df_full["issue_year"], errors="coerce").dropna().min())
+        max_year = int(pd.to_numeric(df_full["issue_year"], errors="coerce").dropna().max())
+        year_range = st.slider(
+            "Filter by Issue Year",
+            min_value=min_year,
+            max_value=max_year,
+            value=(min_year, max_year)
         )
     else:
-        date_range = None
-        st.caption("No issue date column found — charts won’t filter by date.")
+        st.caption("No issue_year column found — charts won’t filter by year.")
 
-    # Optional category filters if present
     grade_sel = None
     if "grade" in df_full.columns:
-        opts = sorted(df_full["grade"].dropna().unique().tolist())
+        opts = sorted(pd.Series(df_full["grade"]).dropna().astype(str).unique().tolist())
         grade_sel = st.multiselect("Grade", options=opts, default=[])
 
     term_sel = None
     if "term" in df_full.columns:
-        term_opts = df_full["term"].astype(str).dropna().unique().tolist()
+        term_opts = pd.Series(df_full["term"]).dropna().astype(str).unique().tolist()
         term_sel = st.multiselect("Term", options=term_opts, default=[])
 
 # -------------------- Apply Filters --------------------
 df = df_full.copy()
 
-if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-    start_d, end_d = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-    if "issue_d" in df.columns:
-        df = df[(df["issue_d"] >= start_d) & (df["issue_d"] <= end_d)]
+if year_range and "issue_year" in df.columns:
+    df = df[
+        (pd.to_numeric(df["issue_year"], errors="coerce") >= year_range[0]) &
+        (pd.to_numeric(df["issue_year"], errors="coerce") <= year_range[1])
+    ]
 
 if grade_sel is not None and len(grade_sel) > 0:
-    df = df[df["grade"].isin(grade_sel)]
+    df = df[df["grade"].astype(str).isin(grade_sel)]
 
 if term_sel is not None and len(term_sel) > 0:
     df = df[df["term"].astype(str).isin(term_sel)]
 
-# -------------------- KPIs (no Issue Date Range KPI) --------------------
+# -------------------- KPIs --------------------
 total_rows = len(df)
 total_cols = df.shape[1]
 bad_ratio = "—"
@@ -169,17 +170,18 @@ tab_hist, tab_box, tab_density, tab_corr = st.tabs([
     "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)", "🧮 Correlation Heatmap"
 ])
 
+# Prepare numeric column list once
+num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
+
 # ========== Histograms ==========
 with tab_hist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Histogram")
-    num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
     if len(num_cols) == 0:
         st.info("No numeric columns available.")
     else:
-        col = st.selectbox("Numeric column", options=num_cols, index=min(0, len(num_cols)-1))
+        col = st.selectbox("Numeric column", options=num_cols, index=0)
         bins = st.slider("Bins", 10, 80, 40, 5)
-        # Overlay by target if present
         if "target" in df.columns:
             chart = alt.Chart(df).mark_bar(opacity=0.7).encode(
                 x=alt.X(f"{col}:Q", bin=alt.Bin(maxbins=bins), title=col),
@@ -203,14 +205,12 @@ with tab_box:
     if len(num_cols) == 0:
         st.info("No numeric columns available.")
     else:
-        y_col = st.selectbox("Y (numeric)", options=num_cols, index=min(0, len(num_cols)-1), key="box_y")
-        # X = target or a categorical if available
+        y_col = st.selectbox("Y (numeric)", options=num_cols, index=0, key="box_y")
         cat_options = []
         if "target" in df.columns:
             cat_options.append("target")
         cat_options += [c for c in df.columns if df[c].dtype == "object" or df[c].dtype.name == "category"]
-        cat_options = list(dict.fromkeys(cat_options))  # unique preserve order
-
+        cat_options = list(dict.fromkeys(cat_options))
         if len(cat_options) == 0:
             st.info("No categorical column (or target) to group by.")
         else:
@@ -230,9 +230,8 @@ with tab_density:
     if len(num_cols) == 0:
         st.info("No numeric columns available.")
     else:
-        dens_col = st.selectbox("Numeric column", options=num_cols, index=min(0, len(num_cols)-1), key="dens")
+        dens_col = st.selectbox("Numeric column", options=num_cols, index=0, key="dens")
         if "target" in df.columns:
-            # Density by target
             dens = alt.Chart(df).transform_density(
                 dens_col, groupby=["target"], as_=[dens_col, "density"]
             ).mark_area(opacity=0.5).encode(
@@ -254,7 +253,6 @@ with tab_density:
 with tab_corr:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Correlation Heatmap")
-    # default features: top 10 by absolute correlation to target (if present)
     num_df = df.select_dtypes(include=[np.number]).copy()
     if num_df.empty:
         st.info("No numeric columns to correlate.")
@@ -262,7 +260,6 @@ with tab_corr:
         default_features = list(num_df.columns)
         if "target" in num_df.columns and len(num_df.columns) > 1:
             corr_to_target = num_df.corr(numeric_only=True)["target"].abs().sort_values(ascending=False)
-            # drop target itself, take next 9 top features + target
             top_feats = [c for c in corr_to_target.index if c != "target"][:9]
             default_features = ["target"] + top_feats
 
@@ -291,7 +288,7 @@ st.write("")
 st.markdown(
     """
     <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
-      Interactive Streamlit dashboard • Filters drive all charts • Target-only dataset ✅
+      Interactive Streamlit dashboard • Year slider + filters drive all charts • Target-only dataset ✅
     </div>
     """,
     unsafe_allow_html=True
