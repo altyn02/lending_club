@@ -1,8 +1,6 @@
 # app.py — Lending Club Dashboard (uses existing merged dataset; design-first + your analysis)
 # ---------------------------------------------------------------------
 
-pip install matplotlib
-
 import numpy as np
 import pandas as pd
 import streamlit as st
