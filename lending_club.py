@@ -164,7 +164,7 @@ st.write("")
 
 # -------------------- Tabs --------------------
 tab_hist, tab_box, tab_density, tab_corr, tab_logit = st.tabs([
-    "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)", "🧮 Correlation Heatmap", "🧠 Logit (no eval)"
+    "📊 Histograms", "📦 Boxplots", "🌫️ Density (KDE)", "🧮 Correlation Heatmap", "🧠 Logit"
 ])
 
 # Prepare numeric column list once
