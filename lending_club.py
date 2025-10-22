@@ -1,6 +1,5 @@
-# app.py — Lending Club Dashboard (auto-load from local or GitHub)
-# Uses: early_pool_balanced_15k_each.csv
-# Missingness section removed (dataset is clean)
+# app.py — Lending Club Dashboard (target-only; auto-load local or GitHub)
+# Dataset: early_pool_balanced_15k_each.csv
 
 import os
 import tempfile
@@ -42,7 +41,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 # -------------------- HERO --------------------
 TITLE = "Lending Club Credit Dashboard"
-SUBTITLE = "Welcome 👋 — Explore, analyze, and visualize Lending Club data interactively."
+SUBTITLE = "Welcome 👋 — Explore, analyze, and visualize your balanced early-pool sample."
 LOGO_URL = "https://github.com/altyn02/lending_club/releases/download/lending_photo/lending.webp"
 
 st.markdown(
@@ -86,13 +85,12 @@ def load_data(local_path: Path, url: str) -> pd.DataFrame:
 df_full = load_data(DATA_PATH, DATA_URL)
 
 # -------------------- Light Cleaning --------------------
-# Convert percent-like columns if needed
+# Percent-like columns if present
 if "int_rate" in df_full and not pd.api.types.is_numeric_dtype(df_full["int_rate"]):
     df_full["int_rate"] = (
         df_full["int_rate"].astype(str).str.replace("%","", regex=False)
         .str.extract(r"([-+]?\d*\.?\d+)", expand=False).astype(float)
     )
-
 if "revol_util" in df_full and not pd.api.types.is_numeric_dtype(df_full["revol_util"]):
     df_full["revol_util"] = (
         df_full["revol_util"].astype(str).str.replace("%","", regex=False)
@@ -108,7 +106,7 @@ if "issue_d" in df_full:
     if df_full["issue_d"].notna().any():
         df_full["issue_year"] = df_full["issue_d"].dt.year
 
-# Sampling (dataset is small/balanced, but keep pattern)
+# Sampling (kept for consistency)
 SAMPLE_N = 200_000
 df = df_full.sample(min(len(df_full), SAMPLE_N), random_state=42)
 
@@ -118,14 +116,9 @@ total_cols = df_full.shape[1]
 date_min = df_full["issue_d"].min().date().isoformat() if "issue_d" in df_full and df_full["issue_d"].notna().any() else "—"
 date_max = df_full["issue_d"].max().date().isoformat() if "issue_d" in df_full and df_full["issue_d"].notna().any() else "—"
 
-# Target detection: prefer loan_status if present; else try 'target' 0/1
+# Target-only: assume 1 = Bad, 0 = Good (adjust label text below if your convention differs)
 bad_ratio = "—"
-if "loan_status" in df_full.columns:
-    lc = df_full["loan_status"].astype(str).str.lower()
-    bad = lc.isin(["charged off","default","late (31-120 days)"]).mean()
-    bad_ratio = f"{bad*100:.1f}%"
-elif "target" in df_full.columns:
-    # Generic: treat 1 as "bad" if distribution looks balanced (your sample is balanced 15k each)
+if "target" in df_full.columns:
     try:
         bad = (df_full["target"] == 1).mean()
         bad_ratio = f"{bad*100:.1f}%"
@@ -140,7 +133,7 @@ with k2:
 with k3:
     st.markdown(f'<div class="kpi"><div class="label">Issue Date Range</div><div class="value">{date_min} → {date_max}</div></div>', unsafe_allow_html=True)
 with k4:
-    st.markdown(f'<div class="kpi"><div class="label">Bad Rate (approx)</div><div class="value">{bad_ratio}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi"><div class="label">Bad Rate (target==1)</div><div class="value">{bad_ratio}</div></div>', unsafe_allow_html=True)
 
 st.write("")
 
@@ -180,34 +173,23 @@ with r1c2:
         st.caption("Column 'int_rate' not found.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Row 2: Status by Grade | Top Purposes (replaces Missingness)
+# Row 2: Status(by target) × Grade | Top Purposes / Term
 r2c1, r2c2 = st.columns((1.25, 1))
 with r2c1:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("#### Status by Grade")
-    if {"loan_status","grade"}.issubset(df.columns):
-        pv = pd.pivot_table(df, index="grade", columns="loan_status", aggfunc="size", fill_value=0)
-        pv = pv.reset_index().melt(id_vars="grade", var_name="status", value_name="count")
-        bar = alt.Chart(pv).mark_bar().encode(
-            x=alt.X("grade:N", sort=alt.SortField("grade", order="ascending")),
-            y="count:Q",
-            color="status:N",
-            tooltip=["grade","status","count"]
-        ).properties(height=320)
-        st.altair_chart(bar, use_container_width=True)
-    elif "grade" in df.columns and "target" in df.columns:
-        # If only target exists
+    st.markdown("#### Target Distribution by Grade")
+    if {"grade","target"}.issubset(df.columns):
         pv = df.groupby(["grade","target"]).size().reset_index(name="count")
-        pv["status"] = pv["target"].map({1:"Bad", 0:"Good"}).fillna(pv["target"].astype(str))
+        pv["status"] = pv["target"].map({1: "Bad", 0: "Good"}).fillna(pv["target"].astype(str))
         bar = alt.Chart(pv).mark_bar().encode(
-            x=alt.X("grade:N", sort=alt.SortField("grade", order="ascending")),
-            y="count:Q",
-            color="status:N",
+            x=alt.X("grade:N", sort=alt.SortField("grade", order="ascending"), title="Grade"),
+            y=alt.Y("count:Q", title="Count"),
+            color=alt.Color("status:N", title="Class"),
             tooltip=["grade","status","count"]
         ).properties(height=320)
         st.altair_chart(bar, use_container_width=True)
     else:
-        st.caption("Need columns: grade + (loan_status or target).")
+        st.caption("Need columns: grade and target.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 with r2c2:
@@ -222,19 +204,18 @@ with r2c2:
             tooltip=["purpose","count"]
         ).properties(height=320)
         st.altair_chart(purpose_chart, use_container_width=True)
-    else:
+    elif "term" in df.columns:
         st.markdown("#### Term Distribution")
-        if "term" in df.columns:
-            term_counts = df["term"].astype(str).value_counts().reset_index()
-            term_counts.columns = ["term","count"]
-            term_chart = alt.Chart(term_counts).mark_bar().encode(
-                x=alt.X("term:N", sort='-y', title="Term"),
-                y=alt.Y("count:Q", title="Count"),
-                tooltip=["term","count"]
-            ).properties(height=320)
-            st.altair_chart(term_chart, use_container_width=True)
-        else:
-            st.caption("No 'purpose' or 'term' column available.")
+        term_counts = df["term"].astype(str).value_counts().reset_index()
+        term_counts.columns = ["term","count"]
+        term_chart = alt.Chart(term_counts).mark_bar().encode(
+            x=alt.X("term:N", sort='-y', title="Term"),
+            y=alt.Y("count:Q", title="Count"),
+            tooltip=["term","count"]
+        ).properties(height=320)
+        st.altair_chart(term_chart, use_container_width=True)
+    else:
+        st.caption("No 'purpose' or 'term' column available.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # -------------------- Footer --------------------
@@ -242,7 +223,7 @@ st.write("")
 st.markdown(
     """
     <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
-      Dashboard built with Streamlit — auto-loads balanced early-pool dataset 📊
+      Dashboard built with Streamlit — target-only balanced sample 📊
     </div>
     """,
     unsafe_allow_html=True
