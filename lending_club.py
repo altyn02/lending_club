@@ -41,7 +41,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 # -------------------- HERO --------------------
 TITLE = "Lending Club Credit Dashboard"
 SUBTITLE = "Welcome 👋 — Explore, analyze, and visualize Lending Club data interactively."
-LOGO_URL = "https://raw.githubusercontent.com/altyn02/lending_club/main/assets/lendingclub_logo.png"
+LOGO_URL = "https://github.com/altyn02/lending_club/releases/download/lending_photo/lending.webp"
 
 st.markdown(
     f"""
