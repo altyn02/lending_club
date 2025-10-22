@@ -16,9 +16,10 @@ pd.set_option("display.max_columns", 200)
 # -------------------- CSS (Design) --------------------
 CSS = """
 <style>
-/* global tweaks */
-html, body, [class*="css"] { font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, 'Apple Color Emoji','Segoe UI Emoji'; }
-section.main > div { padding-top: 1rem; }
+/* sample styling */
+body {
+  background-color: white;
+}
 
 /* gradient hero */
 .hero {
@@ -34,5 +35,13 @@ section.main > div { padding-top: 1rem; }
 }
 
 /* metric cards */
-.kpi { border-radius: 16px; padding: 14px 16px; background: #f8fafc; border: 1px solid #e5e7eb; }
+.kpi { 
+  border-radius: 16px; 
+  padding: 14px 16px; 
+  background: #f8fafc; 
+  border: 1px solid #e5e7eb; 
+}
 .kpi .label { font-size: 0.92rem; color: #475569; }
+.kpi .value { font-size: 1.35rem; font-weight: 700; color: #0f172a; }
+</style>
+"""
