@@ -398,7 +398,13 @@ with tab_ttest:
             if not chosen:
                 st.info("No features selected.")
             else:
-                sample_n = st.slider("Sample rows for speed", 1000, min(len(df), EDA_SAMPLE_N), min(min(len(df), EDA_SAMPLE_N), 5000), step=500)
+                # robust sample slider (handles small datasets)
+                max_sample = max(1, min(len(df), EDA_SAMPLE_N))
+                min_value = 1
+                default = min(max_sample, 5000)
+                step = 500 if max_sample >= 500 else 1
+                sample_n = st.slider("Sample rows for speed", min_value=min_value, max_value=max_sample, value=default, step=step)
+
                 src = df.sample(sample_n, random_state=42) if len(df) > sample_n else df.copy()
                 src = src[[group_col] + chosen].dropna()
 
