@@ -207,9 +207,9 @@ def categorical_cols(df: pd.DataFrame, max_card: int = 30, include_target_if_cat
     return list(dict.fromkeys(cats))
 
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
-tab_data, tab_hist, tab_box, tab_corr, tab_ttest, tab_pair, tab_cv, tab_logit = st.tabs([ "🧭Data Exploration",
+tab_data, tab_hist, tab_box, tab_corr, tab_ttest, tab_cv, tab_logit = st.tabs([ "🧭Data Exploration",
     "📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap",
-    "📏 t-Tests",  "🔗 Pairwise (Sample)", "🏁 Performance Evaluation ", "🧠 Logit"
+    "📏 t-Tests", "🏁 Performance Evaluation ", "🧠 Logit"
 ])
 
 # ========== Data Exploration ==========
@@ -591,43 +591,6 @@ with tab_cv:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    
-# ========== STEPWISE ==========
-
-with tab_pair:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Pairwise Relationships (Sample, auto)")
-    PAIR_NUM = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
-    if len(PAIR_NUM) < 2:
-        st.info("Need at least two numeric columns.")
-    else:
-        top_by_corr = get_featured_vars(df, k=min(6, len(PAIR_NUM)))
-        chosen = top_by_corr if top_by_corr else PAIR_NUM[:min(4, len(PAIR_NUM))]
-        sample_n = min(5000, len(df))
-        src = df.sample(sample_n, random_state=42) if len(df) > sample_n else df.copy()
-        src = src[chosen].dropna()
-
-        charts = []
-        for i, ycol in enumerate(chosen):
-            row_charts = []
-            for j, xcol in enumerate(chosen):
-                if i == j:
-                    c = alt.Chart(src).transform_density(xcol, as_=[xcol, "density"]).mark_area(opacity=0.5).encode(
-                        x=alt.X(f"{xcol}:Q", title=None), y="density:Q"
-                    ).properties(height=150, width=150)
-                elif i > j:
-                    c = alt.Chart(src).mark_circle(size=20, opacity=0.6).encode(
-                        x=alt.X(f"{xcol}:Q", title=None), y=alt.Y(f"{ycol}:Q", title=None),
-                        tooltip=[xcol, ycol]
-                    ).properties(height=150, width=150)
-                else:
-                    c = alt.Chart(pd.DataFrame({"x":[0],"y":[0]})).mark_rect(opacity=0).properties(height=150, width=150)
-                row_charts.append(c)
-            charts.append(alt.hconcat(*row_charts, spacing=6))
-        grid = alt.vconcat(*charts, spacing=6).resolve_scale(color="independent").properties(title="Pairwise Relationships (Sample)")
-        st.altair_chart(grid, use_container_width=True)
-        st.caption(f"Variables shown: {', '.join(chosen)}  •  Sample: {len(src):,} rows")
-    st.markdown('</div>', unsafe_allow_html=True)
 
 # ========== Logit (own tab) ==========
 with tab_logit:
