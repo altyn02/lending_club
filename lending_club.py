@@ -345,13 +345,11 @@ with tab_ttest:
         st.markdown('</div>', unsafe_allow_html=True)
         st.stop()
 
-    # choose grouping column (categorical-like)
     group_opts = categorical_cols(df_eda, max_card=50, include_target_if_cat=True)
     if not group_opts:
         st.info("No categorical-like column available for grouping.")
     else:
         group_col = st.selectbox("Group by (categorical)", options=group_opts, index=0 if "target" in group_opts else 0)
-        # numeric candidates
         num_candidates = [c for c in df_eda.select_dtypes(include=[np.number]).columns if c != group_col]
         if not num_candidates:
             st.info("No numeric columns to test.")
@@ -378,8 +376,7 @@ with tab_ttest:
                 st.info("No features selected.")
             else:
                 sample_n = st.slider("Sample rows for speed", 1000, min(len(df), EDA_SAMPLE_N), min(min(len(df), EDA_SAMPLE_N), 5000), step=500)
-                use_sample = len(df) > sample_n
-                src = df.sample(sample_n, random_state=42) if use_sample else df.copy()
+                src = df.sample(sample_n, random_state=42) if len(df) > sample_n else df.copy()
                 src = src[[group_col] + chosen].dropna()
 
                 @st.cache_data
@@ -393,18 +390,14 @@ with tab_ttest:
                         for lv in levels:
                             arr = pd.to_numeric(src_df.loc[groups == lv, f], errors="coerce").dropna().values
                             vals.append(arr)
-                        # ANOVA if >2 groups
                         if len(vals) >= 2 and all(len(v) >= 2 for v in vals):
                             if len(vals) == 2:
-                                # two-group: compute equal-var and Welch
                                 t_eq, p_eq = stats.ttest_ind(vals[0], vals[1], equal_var=True)
                                 t_w, p_w = stats.ttest_ind(vals[0], vals[1], equal_var=False)
-                                # Cohen's d (approx)
                                 m1, m2 = vals[0].mean(), vals[1].mean()
                                 s1, s2 = vals[0].std(ddof=1), vals[1].std(ddof=1)
                                 denom = np.sqrt((s1**2 + s2**2) / 2) if (s1 > 0 or s2 > 0) else np.nan
                                 cohens_d = (m1 - m2) / denom if denom and not np.isnan(denom) else np.nan
-                                # pick Welch as final
                                 row.update({
                                     "F_statistic": np.nan, "F_pvalue": np.nan,
                                     "t_equal": float(t_eq), "p_equal": float(p_eq),
@@ -425,7 +418,6 @@ with tab_ttest:
                                     "cohens_d": np.nan
                                 })
                         else:
-                            # insufficient data
                             row.update({
                                 "F_statistic": np.nan, "F_pvalue": np.nan,
                                 "t_equal": np.nan, "p_equal": np.nan,
@@ -441,13 +433,11 @@ with tab_ttest:
 
                 st.markdown("#### Results (first rows)")
                 st.dataframe(res.reset_index(drop=True), use_container_width=True)
-
                 csv = res.to_csv(index=False).encode("utf-8")
                 st.download_button("Download results CSV", data=csv, file_name="ttest_anova_results.csv", mime="text/csv")
-
                 st.caption("Notes: t_final/p_final = Welch for 2 groups; for >2 groups F_statistic/F_pvalue shown. Cohen's d uses pooled-ish denom for quick effect-size estimate.")
     st.markdown('</div>', unsafe_allow_html=True)
-         
+
 # ========== STEPWISE ==========
 
 with tab_pair:
