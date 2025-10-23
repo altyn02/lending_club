@@ -232,10 +232,10 @@ tab_hist, tab_box, tab_corr, tab_pair, tab_logit = st.tabs([
     "📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "🔗 Pairwise (Sample)", "🧠 Logit"
 ])
 
-# ========== Histograms (chunked auto-grid with target legend) ==========
+# ========== Histograms (fixed variables, no chunking) ==========
 with tab_hist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Histogram — fast grid (Top-K, chunked)")
+    st.subheader("Histogram — Selected Variables")
 
     # 🎯 Target legend
     st.markdown(
@@ -247,29 +247,19 @@ with tab_hist:
         unsafe_allow_html=True
     )
 
-    if not HIST_ORDERED:
+    HIST_VARS = ["loan_amnt", "int_rate", "delinq_2yrs", "annual_inc", "dti"]
+    HIST_VARS = [c for c in HIST_VARS if c in df_eda.columns]  # check if columns exist
+
+    if not HIST_VARS:
         st.info("No suitable numeric columns.")
     else:
-        # number of bins
-        bins = st.slider("Bins", 10, 80, 40, 5, key="hist_bins_auto")
+        bins = st.slider("Bins", 10, 80, 40, 5, key="hist_bins_selected")
 
-        # pagination
-        page = st.number_input(
-            "Chunk (browse variables)",
-            min_value=1,
-            value=1,
-            max_value=max(1, (len(HIST_ORDERED) + CHUNK_SIZE - 1)//CHUNK_SIZE)
-        )
-        hist_cols, total_chunks = paginate_list(HIST_ORDERED, CHUNK_SIZE, page)
-        st.caption(f"Showing {len(hist_cols)} of {len(HIST_ORDERED)} variables • Chunk {page}/{total_chunks}")
-
-        # chart rendering
-        cols = hist_cols
-        src = df_eda[cols + (["target"] if "target" in df_eda.columns else [])].dropna()
+        src = df_eda[HIST_VARS + (["target"] if "target" in df_eda.columns else [])].dropna()
 
         chart = (
             alt.Chart(src)
-            .transform_fold(cols, as_=["variable", "value"])
+            .transform_fold(HIST_VARS, as_=["variable", "value"])
             .mark_bar(opacity=0.7)
             .encode(
                 x=alt.X("value:Q", bin=alt.Bin(maxbins=bins), title=None),
@@ -277,11 +267,13 @@ with tab_hist:
                 color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
                 facet=alt.Facet("variable:N", columns=3, title="")
             )
-            .properties(height=160)
+            .properties(height=180)
         )
+
         st.altair_chart(chart, use_container_width=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ========== Boxplots (chunked auto-grid) ==========
 with tab_box:
