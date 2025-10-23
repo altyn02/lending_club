@@ -207,7 +207,7 @@ def categorical_cols(df: pd.DataFrame, max_card: int = 30, include_target_if_cat
     return list(dict.fromkeys(cats))
 
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
-tab_hist, tab_box, tab_corr, tab_ttest, tab_pair, tab_cv, tab_logit = st.tabs([
+tab_data, tab_hist, tab_box, tab_corr, tab_ttest, tab_pair, tab_cv, tab_logit = st.tabs([ "🧭Data Exploration",
     "📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap",
     "📏 t-Tests",  "🔗 Pairwise (Sample)", "🏁 Performance Evaluation ", "🧠 Logit"
 ])
