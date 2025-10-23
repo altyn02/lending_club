@@ -222,17 +222,9 @@ def numeric_cols(df: pd.DataFrame, exclude: set | None = None) -> list:
     exclude = exclude or set()
     return [c for c in df.columns if c not in exclude and is_numeric_dtype(df[c])]
 
-# Sidebar EDA control (only downsample to keep it fast)
-with st.sidebar:
-    st.subheader("EDA Controls")
-    downsample_rows = st.number_input("Downsample rows (0 = off)", min_value=0, value=DOWNSAMPLE_MAX, step=5000)
-
-FEATUREED_NUM, FEATURED_CAT = get_featured_vars(df, k=6)
 
 # Downsample for snappy charts (EDA only)
-df_eda = df
-if downsample_rows and len(df) > downsample_rows:
-    df_eda = df.sample(downsample_rows, random_state=42)
+df_eda = df.copy()
 
 # Suitability lists
 EXCLUDE = {"target"}
