@@ -550,7 +550,7 @@ with tab_pair:
     if len(PAIR_NUM) < 2:
         st.info("Need at least two numeric columns.")
     else:
-        top_by_corr, _ = get_featured_vars(df, k=min(6, len(PAIR_NUM)))
+        top_by_corr = get_featured_vars(df, k=min(6, len(PAIR_NUM)))
         chosen = top_by_corr if top_by_corr else PAIR_NUM[:min(4, len(PAIR_NUM))]
         sample_n = min(5000, len(df))
         src = df.sample(sample_n, random_state=42) if len(df) > sample_n else df.copy()
