@@ -189,8 +189,8 @@ def get_featured_vars(df, k=6):
     return top_num
 
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
-tab_data, tab_hist, tab_box, tab_corr, tab_logit = st.tabs([
-    "🧭 Data Exploration","📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "🧠 Logit"
+tab_data, tab_hist, tab_box, tab_corr, tab_ttest, tab_pair, tab_logit = st.tabs([
+    "🧭 Data Exploration","📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "⚖️ T-tests / ANOVA", "🔗 Pairwise (Sample)", "🧠 Logit"
 ])
 
 # ========== Data Exploration ==========
@@ -328,6 +328,161 @@ with tab_corr:
         ).properties(height=420)
         st.altair_chart(heat, use_container_width=True)
 
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ========== T- TEST ==========
+
+with tab_ttest:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("T-tests & ANOVA — quick comparisons")
+    st.write("Compare numeric features across groups (default: target). Uses Welch t-test for 2 groups and one-way ANOVA for >2 groups. Results can be downloaded as CSV.")
+
+    try:
+        from scipy import stats
+    except Exception as e:
+        st.info("scipy is required for this tab. Add `scipy` to requirements.")
+        st.exception(e)
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.stop()
+
+    # choose grouping column (categorical-like)
+    group_opts = categorical_cols(df_eda, max_card=50, include_target_if_cat=True)
+    if not group_opts:
+        st.info("No categorical-like column available for grouping.")
+    else:
+        group_col = st.selectbox("Group by (categorical)", options=group_opts, index=0 if "target" in group_opts else 0)
+        # numeric candidates
+        num_candidates = [c for c in df_eda.select_dtypes(include=[np.number]).columns if c != group_col]
+        if not num_candidates:
+            st.info("No numeric columns to test.")
+        else:
+            cap = st.slider("Max features to test (cap)", 3, min(60, max(3, len(num_candidates))), min(12, len(num_candidates)))
+            preset = st.radio("Select features", ["Top by |corr with grouping (if binary)|", "Manual"], horizontal=True)
+
+            if preset.startswith("Top"):
+                unique_vals = df_eda[group_col].dropna().unique()
+                if len(unique_vals) == 2:
+                    try:
+                        grpnum = pd.to_numeric(df_eda[group_col].astype('category').cat.codes, errors="coerce")
+                        corr_abs = df_eda[num_candidates].corrwith(grpnum, numeric_only=True).abs().sort_values(ascending=False)
+                        chosen = corr_abs.index.tolist()[:cap]
+                    except Exception:
+                        chosen = num_candidates[:cap]
+                else:
+                    chosen = num_candidates[:cap]
+            else:
+                chosen = st.multiselect("Pick numeric features", options=num_candidates, default=num_candidates[:min(cap, len(num_candidates))])
+
+            chosen = [c for c in chosen if c in df_eda.columns][:cap]
+            if not chosen:
+                st.info("No features selected.")
+            else:
+                sample_n = st.slider("Sample rows for speed", 1000, min(len(df), EDA_SAMPLE_N), min(min(len(df), EDA_SAMPLE_N), 5000), step=500)
+                use_sample = len(df) > sample_n
+                src = df.sample(sample_n, random_state=42) if use_sample else df.copy()
+                src = src[[group_col] + chosen].dropna()
+
+                @st.cache_data
+                def compute_tests(src_df, group_col, features):
+                    rows = []
+                    groups = src_df[group_col].astype("category")
+                    levels = list(groups.cat.categories)
+                    for f in features:
+                        row = {"feature": f}
+                        vals = []
+                        for lv in levels:
+                            arr = pd.to_numeric(src_df.loc[groups == lv, f], errors="coerce").dropna().values
+                            vals.append(arr)
+                        # ANOVA if >2 groups
+                        if len(vals) >= 2 and all(len(v) >= 2 for v in vals):
+                            if len(vals) == 2:
+                                # two-group: compute equal-var and Welch
+                                t_eq, p_eq = stats.ttest_ind(vals[0], vals[1], equal_var=True)
+                                t_w, p_w = stats.ttest_ind(vals[0], vals[1], equal_var=False)
+                                # Cohen's d (approx)
+                                m1, m2 = vals[0].mean(), vals[1].mean()
+                                s1, s2 = vals[0].std(ddof=1), vals[1].std(ddof=1)
+                                denom = np.sqrt((s1**2 + s2**2) / 2) if (s1 > 0 or s2 > 0) else np.nan
+                                cohens_d = (m1 - m2) / denom if denom and not np.isnan(denom) else np.nan
+                                # pick Welch as final
+                                row.update({
+                                    "F_statistic": np.nan, "F_pvalue": np.nan,
+                                    "t_equal": float(t_eq), "p_equal": float(p_eq),
+                                    "t_welch": float(t_w), "p_welch": float(p_w),
+                                    "t_final": float(t_w), "p_final": float(p_w),
+                                    "cohens_d": float(cohens_d)
+                                })
+                            else:
+                                try:
+                                    F, pF = stats.f_oneway(*vals)
+                                except Exception:
+                                    F, pF = np.nan, np.nan
+                                row.update({
+                                    "F_statistic": float(F), "F_pvalue": float(pF),
+                                    "t_equal": np.nan, "p_equal": np.nan,
+                                    "t_welch": np.nan, "p_welch": np.nan,
+                                    "t_final": np.nan, "p_final": np.nan,
+                                    "cohens_d": np.nan
+                                })
+                        else:
+                            # insufficient data
+                            row.update({
+                                "F_statistic": np.nan, "F_pvalue": np.nan,
+                                "t_equal": np.nan, "p_equal": np.nan,
+                                "t_welch": np.nan, "p_welch": np.nan,
+                                "t_final": np.nan, "p_final": np.nan,
+                                "cohens_d": np.nan
+                            })
+                        rows.append(row)
+                    return pd.DataFrame(rows)
+
+                with st.spinner("Computing tests…"):
+                    res = compute_tests(src, group_col, chosen)
+
+                st.markdown("#### Results (first rows)")
+                st.dataframe(res.reset_index(drop=True), use_container_width=True)
+
+                csv = res.to_csv(index=False).encode("utf-8")
+                st.download_button("Download results CSV", data=csv, file_name="ttest_anova_results.csv", mime="text/csv")
+
+                st.caption("Notes: t_final/p_final = Welch for 2 groups; for >2 groups F_statistic/F_pvalue shown. Cohen's d uses pooled-ish denom for quick effect-size estimate.")
+    st.markdown('</div>', unsafe_allow_html=True)
+         
+# ========== STEPWISE ==========
+
+with tab_pair:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Pairwise Relationships (Sample, auto)")
+    PAIR_NUM = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
+    if len(PAIR_NUM) < 2:
+        st.info("Need at least two numeric columns.")
+    else:
+        top_by_corr, _ = get_featured_vars(df, k=min(6, len(PAIR_NUM)))
+        chosen = top_by_corr if top_by_corr else PAIR_NUM[:min(4, len(PAIR_NUM))]
+        sample_n = min(5000, len(df))
+        src = df.sample(sample_n, random_state=42) if len(df) > sample_n else df.copy()
+        src = src[chosen].dropna()
+
+        charts = []
+        for i, ycol in enumerate(chosen):
+            row_charts = []
+            for j, xcol in enumerate(chosen):
+                if i == j:
+                    c = alt.Chart(src).transform_density(xcol, as_=[xcol, "density"]).mark_area(opacity=0.5).encode(
+                        x=alt.X(f"{xcol}:Q", title=None), y="density:Q"
+                    ).properties(height=150, width=150)
+                elif i > j:
+                    c = alt.Chart(src).mark_circle(size=20, opacity=0.6).encode(
+                        x=alt.X(f"{xcol}:Q", title=None), y=alt.Y(f"{ycol}:Q", title=None),
+                        tooltip=[xcol, ycol]
+                    ).properties(height=150, width=150)
+                else:
+                    c = alt.Chart(pd.DataFrame({"x":[0],"y":[0]})).mark_rect(opacity=0).properties(height=150, width=150)
+                row_charts.append(c)
+            charts.append(alt.hconcat(*row_charts, spacing=6))
+        grid = alt.vconcat(*charts, spacing=6).resolve_scale(color="independent").properties(title="Pairwise Relationships (Sample)")
+        st.altair_chart(grid, use_container_width=True)
+        st.caption(f"Variables shown: {', '.join(chosen)}  •  Sample: {len(src):,} rows")
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ========== Logit (own tab) ==========
