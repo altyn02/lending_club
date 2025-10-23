@@ -188,6 +188,24 @@ def get_featured_vars(df, k=6):
         top_num = numeric_pool[:k]
     return top_num
 
+def categorical_cols(df: pd.DataFrame, max_card: int = 30, include_target_if_cat: bool = True) -> list:
+    """Return small-cardinality categorical-like columns (including low-cardinality numerics)."""
+    cats = []
+    for c in df.columns:
+        if df[c].dtype.name in ("object", "category"):
+            if df[c].dropna().nunique() <= max_card:
+                cats.append(c)
+        elif is_numeric_dtype(df[c]):
+            u = df[c].dropna().nunique()
+            if 2 <= u <= max_card:
+                cats.append(c)
+    if include_target_if_cat and "target" in df.columns:
+        t = df["target"]
+        if (t.dtype.name in ("object", "category")) or (is_numeric_dtype(t) and t.dropna().nunique() <= max_card):
+            if "target" not in cats:
+                cats = ["target"] + cats
+    return list(dict.fromkeys(cats))
+
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
 tab_data, tab_hist, tab_box, tab_corr, tab_ttest, tab_pair, tab_logit = st.tabs([
     "🧭 Data Exploration","📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "⚖️ T-tests / ANOVA", "🔗 Pairwise (Sample)", "🧠 Logit"
