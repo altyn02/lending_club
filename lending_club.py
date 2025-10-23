@@ -345,11 +345,16 @@ with tab_ttest:
         st.markdown('</div>', unsafe_allow_html=True)
         st.stop()
 
-    group_opts = categorical_cols(df_eda, max_card=50, include_target_if_cat=True)
+    # get candidate grouping columns; ensure 'target' is available if it's the only categorical-like column
+    group_opts = categorical_cols(df_eda, max_card=50, include_target_if_cat=True) or []
+    if not group_opts and "target" in df_eda.columns:
+        group_opts = ["target"]
+
     if not group_opts:
         st.info("No categorical-like column available for grouping.")
     else:
         group_col = st.selectbox("Group by (categorical)", options=group_opts, index=0 if "target" in group_opts else 0)
+        # numeric candidates (exclude grouping col)
         num_candidates = [c for c in df_eda.select_dtypes(include=[np.number]).columns if c != group_col]
         if not num_candidates:
             st.info("No numeric columns to test.")
@@ -433,11 +438,13 @@ with tab_ttest:
 
                 st.markdown("#### Results (first rows)")
                 st.dataframe(res.reset_index(drop=True), use_container_width=True)
+
                 csv = res.to_csv(index=False).encode("utf-8")
                 st.download_button("Download results CSV", data=csv, file_name="ttest_anova_results.csv", mime="text/csv")
+
                 st.caption("Notes: t_final/p_final = Welch for 2 groups; for >2 groups F_statistic/F_pvalue shown. Cohen's d uses pooled-ish denom for quick effect-size estimate.")
     st.markdown('</div>', unsafe_allow_html=True)
-
+    
 # ========== STEPWISE ==========
 
 with tab_pair:
