@@ -189,7 +189,7 @@ def get_featured_vars(df, k=6):
     return top_num
 
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
-tab_hist, tab_box, tab_corr, tab_logit = st.tabs([
+tab_data, tab_hist, tab_box, tab_corr, tab_logit = st.tabs([
     "🧭 Data Exploration","📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "🧠 Logit"
 ])
 
