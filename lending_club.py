@@ -265,21 +265,18 @@ with tab_dist:
         with c1:
             show_hist = st.checkbox("Histograms", value=True, key="dist_show_hist")
         with c2:
-            show_box = st.checkbox("Boxplots", value=True, key="dist_show_box")
+            show_box  = st.checkbox("Boxplots",  value=True, key="dist_show_box")
         with c3:
-            show_line = st.checkbox("Line", value=True, key="dist_show_line")
+            show_line = st.checkbox("Line",      value=True, key="dist_show_line")
         with c4:
             bins = st.slider("Histogram bins", 10, 80, 40, 5, key="dist_bins")
 
-        # Base data for EDA visuals
-        # NOTE: For hist & box we EXCLUDE 'int_rate' as requested
-        HIST_BOX_VARS = [v for v in EDA_VARS if v != "int_rate"]
+        # Base data
+        HIST_BOX_VARS = [v for v in EDA_VARS if v != "int_rate"]  # exclude int_rate
         src_all = df_eda[EDA_VARS + (["target"] if "target" in df_eda.columns else [])].dropna()
-        src_hb = df_eda[HIST_BOX_VARS + (["target"] if "target" in df_eda.columns else [])].dropna()
 
         # -------------------- Line chart (time trend) --------------------
         if show_line:
-            # time-like columns to try (pick first available)
             time_candidates = [c for c in ["issue_year", "issue_d"] if c in df.columns]
             time_col = st.selectbox(
                 "Time column for line chart",
@@ -290,22 +287,17 @@ with tab_dist:
 
             y_var = st.selectbox(
                 "Y variable",
-                options=EDA_VARS,  # keep full list here; 'int_rate' allowed for line
+                options=EDA_VARS,  # full list; int_rate allowed for Line
                 index=(EDA_VARS.index("loan_amnt") if "loan_amnt" in EDA_VARS else 0),
                 key="line_y_var"
             )
-
-            agg_choice = st.selectbox(
-                "Aggregation", ["Mean", "Median", "Count"], index=0, key="line_agg"
-            )
+            agg_choice = st.selectbox("Aggregation", ["Mean", "Median", "Count"], index=0, key="line_agg")
 
             if not time_col:
                 st.info("No time column available (e.g., issue_year).")
             else:
-                # Prepare a tidy frame with time, y, and target
                 df_line = df[[time_col, y_var] + (["target"] if "target" in df.columns else [])].copy()
 
-                # Convert time column appropriately
                 if time_col == "issue_year":
                     df_line["__time__"] = pd.to_numeric(df_line[time_col], errors="coerce")
                 else:
@@ -314,30 +306,23 @@ with tab_dist:
 
                 df_line = df_line.dropna(subset=["__time__"])
 
-                # Choose aggregation
                 if agg_choice == "Mean":
-                    agg_func = "mean"; y_enc_title = f"Mean {y_var}"
+                    agg_func, y_enc_title = "mean", f"Mean {y_var}"
                 elif agg_choice == "Median":
-                    agg_func = "median"; y_enc_title = f"Median {y_var}"
-                else:  # Count
-                    agg_func = "count"; y_enc_title = f"Count ({y_var} non-null)"
+                    agg_func, y_enc_title = "median", f"Median {y_var}"
+                else:
+                    agg_func, y_enc_title = "count", f"Count ({y_var} non-null)"
 
-                # Group (with/without target)
                 if "target" in df_line.columns:
                     g = df_line.groupby(["__time__", "target"], observed=False)
                 else:
                     g = df_line.groupby(["__time__"], observed=False)
 
-                plot_df = (
-                    g[y_var].count().reset_index(name="y")
-                    if agg_choice == "Count"
-                    else g[y_var].agg(agg_func).reset_index(name="y")
-                )
+                plot_df = (g[y_var].count().reset_index(name="y")
+                           if agg_choice == "Count"
+                           else g[y_var].agg(agg_func).reset_index(name="y"))
 
-                enc_color = (
-                    alt.Color("target:N", title="target")
-                    if "target" in plot_df.columns else alt.value(None)
-                )
+                enc_color = alt.Color("target:N", title="target") if "target" in plot_df.columns else alt.value(None)
 
                 line = (
                     alt.Chart(plot_df)
@@ -354,48 +339,74 @@ with tab_dist:
                 )
                 st.altair_chart(line, use_container_width=True)
 
-        # -------------------- Histograms (EXCLUDING int_rate) --------------------
+        # -------------------- Histogram (single variable, EXCLUDING int_rate) --------------------
         if show_hist:
             if not HIST_BOX_VARS:
                 st.info("No variables available for histograms.")
             else:
-                hist = (
-                    alt.Chart(src_hb)
-                    .transform_fold(HIST_BOX_VARS, as_=["variable", "value"])
-                    .mark_bar(opacity=0.7)
-                    .encode(
-                        x=alt.X("value:Q", bin=alt.Bin(maxbins=bins), title=None),
-                        y=alt.Y("count():Q", title="Count"),
-                        color=alt.Color("target:N", title="target") if "target" in src_hb.columns else alt.value(None),
-                        facet=alt.Facet("variable:N", columns=3, title="Histograms")
-                    )
-                    .properties(height=180)
+                h_var = st.selectbox(
+                    "Histogram variable",
+                    options=HIST_BOX_VARS,
+                    index=(HIST_BOX_VARS.index("loan_amnt") if "loan_amnt" in HIST_BOX_VARS else 0),
+                    key="hist_var_single",
                 )
+                h_src = df_eda[[h_var] + (["target"] if "target" in df_eda.columns else [])].dropna()
+
+                if "target" in h_src.columns:
+                    hist = (
+                        alt.Chart(h_src)
+                        .mark_bar(opacity=0.6)
+                        .encode(
+                            x=alt.X(f"{h_var}:Q", bin=alt.Bin(maxbins=bins), title=h_var),
+                            y=alt.Y("count():Q", title="Count"),
+                            color=alt.Color("target:N", title="target"),
+                            tooltip=[alt.Tooltip(f"{h_var}:Q", title=h_var), "count()", alt.Tooltip("target:N", title="target")]
+                        )
+                        .properties(height=280, title=f"Histogram — {h_var}")
+                    )
+                else:
+                    hist = (
+                        alt.Chart(h_src)
+                        .mark_bar(opacity=0.8)
+                        .encode(
+                            x=alt.X(f"{h_var}:Q", bin=alt.Bin(maxbins=bins), title=h_var),
+                            y=alt.Y("count():Q", title="Count"),
+                            tooltip=[alt.Tooltip(f"{h_var}:Q", title=h_var), "count()"]
+                        )
+                        .properties(height=280, title=f"Histogram — {h_var}")
+                    )
                 st.altair_chart(hist, use_container_width=True)
 
-        # -------------------- Boxplots (EXCLUDING int_rate) --------------------
+        # -------------------- Boxplot (single variable, EXCLUDING int_rate) --------------------
         if show_box:
             if "target" not in df_eda.columns:
                 st.info("Boxplots require 'target' to group by.")
             elif not HIST_BOX_VARS:
                 st.info("No variables available for boxplots.")
             else:
-                melt = src_hb.melt(id_vars=["target"], value_vars=HIST_BOX_VARS,
-                                   var_name="variable", value_name="value")
+                b_var = st.selectbox(
+                    "Boxplot variable",
+                    options=HIST_BOX_VARS,
+                    index=(HIST_BOX_VARS.index("annual_inc") if "annual_inc" in HIST_BOX_VARS else 0),
+                    key="box_var_single",
+                )
+                b_src = df_eda[["target", b_var]].dropna()
+
                 box = (
-                    alt.Chart(melt)
+                    alt.Chart(b_src)
                     .mark_boxplot()
                     .encode(
                         x=alt.X("target:N", title="target"),
-                        y=alt.Y("value:Q", title=None),
+                        y=alt.Y(f"{b_var}:Q", title=b_var),
                         color=alt.Color("target:N", legend=None),
-                        facet=alt.Facet("variable:N", columns=3, title="Boxplots")
+                        tooltip=[alt.Tooltip(f"{b_var}:Q", title=b_var), alt.Tooltip("target:N", title="target")]
                     )
-                    .properties(height=180)
+                    .properties(height=280, title=f"Boxplot — {b_var} by target")
                 )
                 st.altair_chart(box, use_container_width=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ========== Correlation Heatmap (kept; lightweight) ==========
 with tab_corr:
