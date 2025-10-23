@@ -232,22 +232,41 @@ tab_hist, tab_box, tab_corr, tab_pair, tab_logit = st.tabs([
     "📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "🔗 Pairwise (Sample)", "🧠 Logit"
 ])
 
-# ========== Histograms (chunked auto-grid) ==========
+# ========== Histograms (chunked auto-grid with target legend) ==========
 with tab_hist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Histogram — fast grid (Top-K, chunked)")
+
+    # 🎯 Target legend
+    st.markdown(
+        """
+        <div style="background:#f1f5f9;padding:6px 10px;border-radius:8px;font-size:0.9rem;">
+        🎯 <b>Target legend:</b> <b>0</b> = Charged Off &nbsp;&nbsp;|&nbsp;&nbsp; <b>1</b> = Fully Paid
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     if not HIST_ORDERED:
         st.info("No suitable numeric columns.")
     else:
+        # number of bins
         bins = st.slider("Bins", 10, 80, 40, 5, key="hist_bins_auto")
+
         # pagination
-        page = st.number_input("Chunk (browse variables)", min_value=1, value=1,
-                               max_value=max(1, (len(HIST_ORDERED) + CHUNK_SIZE - 1)//CHUNK_SIZE))
+        page = st.number_input(
+            "Chunk (browse variables)",
+            min_value=1,
+            value=1,
+            max_value=max(1, (len(HIST_ORDERED) + CHUNK_SIZE - 1)//CHUNK_SIZE)
+        )
         hist_cols, total_chunks = paginate_list(HIST_ORDERED, CHUNK_SIZE, page)
         st.caption(f"Showing {len(hist_cols)} of {len(HIST_ORDERED)} variables • Chunk {page}/{total_chunks}")
 
+        # chart rendering
         cols = hist_cols
         src = df_eda[cols + (["target"] if "target" in df_eda.columns else [])].dropna()
+
         chart = (
             alt.Chart(src)
             .transform_fold(cols, as_=["variable", "value"])
@@ -257,9 +276,11 @@ with tab_hist:
                 y=alt.Y("count():Q", title="Count"),
                 color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
                 facet=alt.Facet("variable:N", columns=3, title="")
-            ).properties(height=160)
+            )
+            .properties(height=160)
         )
         st.altair_chart(chart, use_container_width=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ========== Boxplots (chunked auto-grid) ==========
