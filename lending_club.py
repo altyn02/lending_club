@@ -207,10 +207,12 @@ def categorical_cols(df: pd.DataFrame, max_card: int = 30, include_target_if_cat
     return list(dict.fromkeys(cats))
 
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
-tab_data, tab_hist, tab_box, tab_corr, tab_ttest, tab_cv, tab_logit = st.tabs([ "🧭Data Exploration",
-    "📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap",
+# -------------------- Tabs (merged Hist+Box into one) --------------------
+tab_data, tab_dist, tab_corr, tab_ttest, tab_cv, tab_logit = st.tabs([
+    "🧭Data Exploration", "📈 Data Visualization", "🧮 Correlation Heatmap",
     "📏 t-Tests", "🏁 Performance Evaluation ", "🧠 Logit"
 ])
+
 
 # ========== Data Exploration ==========
 
@@ -249,70 +251,63 @@ with tab_data:
 
     st.markdown('</div>', unsafe_allow_html=True)
     
-# ========== Histograms (fixed variables, no chunking) ==========
-with tab_hist:
+# ========== Distributions (merged Histograms + Boxplots) ==========
+with tab_dist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Histogram — Selected Variables")
+    st.subheader("Distributions — Histograms & Boxplots (Selected Variables)")
     st.caption("🎯 Target legend: 0 = Charged Off, 1 = Fully Paid")
 
     if not EDA_VARS:
         st.info("No suitable numeric columns from the requested list.")
     else:
-        bins = st.slider("Bins", 10, 80, 40, 5, key="hist_bins_selected")
+        # --- Controls
+        c1, c2, c3 = st.columns([1,1,2])
+        with c1:
+            show_hist = st.checkbox("Show histograms", value=True, key="dist_show_hist")
+        with c2:
+            show_box  = st.checkbox("Show boxplots",  value=True, key="dist_show_box")
+        with c3:
+            bins = st.slider("Histogram bins", 10, 80, 40, 5, key="dist_bins")
+
+        # DATA
         src = df_eda[EDA_VARS + (["target"] if "target" in df_eda.columns else [])].dropna()
 
-        chart = (
-            alt.Chart(src)
-            .transform_fold(EDA_VARS, as_=["variable", "value"])
-            .mark_bar(opacity=0.7)
-            .encode(
-                x=alt.X("value:Q", bin=alt.Bin(maxbins=bins), title=None),
-                y=alt.Y("count():Q", title="Count"),
-                color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
-                facet=alt.Facet("variable:N", columns=3, title="")
-            )
-            .properties(height=180)
-        )
-        st.altair_chart(chart, use_container_width=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ========== Boxplots (fixed variables, grouped by target if available) ==========
-with tab_box:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Boxplot — Selected Variables")
-    st.caption("🎯 Target legend: 0 = Charged Off, 1 = Fully Paid")
-
-    if not EDA_VARS:
-        st.info("No suitable numeric columns from the requested list.")
-    else:
-        # group by 'target' if present; otherwise first small-cardinality categorical
-        if "target" in df_eda.columns:
-            x_col = "target"
-        else:
-            cat_cols = [c for c in df_eda.columns
-                        if df_eda[c].dtype.name in ("object", "category")
-                        and df_eda[c].dropna().nunique() <= 30]
-            x_col = cat_cols[0] if cat_cols else None
-
-        if not x_col:
-            st.info("No categorical column to group by.")
-        else:
-            src = df_eda[[x_col] + EDA_VARS].dropna()
-            melt = src.melt(id_vars=[x_col], value_vars=EDA_VARS,
-                            var_name="variable", value_name="value")
-            chart = (
-                alt.Chart(melt)
-                .mark_boxplot()
+        # --- Histograms (faceted by variable, colored by target if present)
+        if show_hist:
+            hist = (
+                alt.Chart(src)
+                .transform_fold(EDA_VARS, as_=["variable", "value"])
+                .mark_bar(opacity=0.7)
                 .encode(
-                    x=alt.X(f"{x_col}:N", title=x_col),
-                    y=alt.Y("value:Q", title=None),
-                    color=alt.Color(f"{x_col}:N", legend=None),
-                    facet=alt.Facet("variable:N", columns=3, title="")
+                    x=alt.X("value:Q", bin=alt.Bin(maxbins=bins), title=None),
+                    y=alt.Y("count():Q", title="Count"),
+                    color=alt.Color("target:N", title="target") if "target" in src.columns else alt.value(None),
+                    facet=alt.Facet("variable:N", columns=3, title="Histograms")
                 )
                 .properties(height=180)
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(hist, use_container_width=True)
+
+        # --- Boxplots (faceted by variable, X = target)
+        if show_box:
+            if "target" not in df_eda.columns:
+                st.info("Boxplots require 'target' to group by.")
+            else:
+                # reshape for facet by variable
+                melt = src.melt(id_vars=["target"], value_vars=EDA_VARS,
+                                var_name="variable", value_name="value")
+                box = (
+                    alt.Chart(melt)
+                    .mark_boxplot()
+                    .encode(
+                        x=alt.X("target:N", title="target"),
+                        y=alt.Y("value:Q", title=None),
+                        color=alt.Color("target:N", legend=None),
+                        facet=alt.Facet("variable:N", columns=3, title="Boxplots")
+                    )
+                    .properties(height=180)
+                )
+                st.altair_chart(box, use_container_width=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
