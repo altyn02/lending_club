@@ -398,8 +398,14 @@ with tab_ttest:
             if not chosen:
                 st.info("No features selected.")
             else:
-                # robust sample slider (handles small datasets)
-                max_sample = max(1, min(len(df), EDA_SAMPLE_N))
+                # robust sample slider (handles missing EDA_SAMPLE_N)
+                eda_sample = globals().get("EDA_SAMPLE_N", 10000)
+                try:
+                    eda_sample = int(eda_sample)
+                except Exception:
+                    eda_sample = 10000
+
+                max_sample = max(1, min(len(df), eda_sample))
                 min_value = 1
                 default = min(max_sample, 5000)
                 step = 500 if max_sample >= 500 else 1
