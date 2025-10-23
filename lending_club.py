@@ -438,105 +438,156 @@ with tab_ttest:
 with tab_cv:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("5-Fold Cross-Validation Performance (F1-optimized)")
+    st.caption("Target legend — 0: Charged Off, 1: Fully Paid")
 
     if "target" not in df.columns:
         st.info("No 'target' column found.")
     else:
-        run_cv = st.button("Run 5-fold CV", key="run_cv_button")
-        if run_cv:
-            from sklearn.model_selection import StratifiedKFold
+        # --- Independent model settings for CV (decoupled from Logit tab)
+        numeric_pool = [c for c in df.select_dtypes(include=[np.number]).columns if c != "target"]
+        if len(numeric_pool) == 0:
+            st.info("No numeric features available for CV.")
+        else:
+            default_pool = [c for c in ["int_rate","dti","revol_util","loan_amnt","annual_inc"] if c in numeric_pool] or numeric_pool[:8]
+
+            with st.expander("⚙️ CV settings (features & regularization)", expanded=False):
+                C_cv = st.slider("Regularization strength (C)", 0.01, 10.0, 1.0, 0.01, key="cv_C")
+                balance_cv = st.checkbox("Class weight = 'balanced'", value=True, key="cv_bal")
+                top_k_cv = st.slider("Auto-select top-k features (by |coef|)", 3, min(12, len(default_pool)), 6, key="cv_topk")
+                feats_override_cv = st.multiselect(
+                    "(Optional) Manually choose features",
+                    options=numeric_pool,
+                    default=default_pool,
+                    key="cv_feats_override"
+                )
+
+            # --- Build a feature set for CV: quick prefit to rank by |coef|
             from sklearn.preprocessing import StandardScaler
             from sklearn.linear_model import LogisticRegression
-            from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix, roc_auc_score
+            from sklearn.pipeline import Pipeline
+            try:
+                base_feats_cv = feats_override_cv if feats_override_cv else default_pool
+                dtrain0_cv = df[["target"] + base_feats_cv].dropna().copy()
+                if dtrain0_cv.empty:
+                    st.info("Not enough non-missing rows for the selected features.")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    st.stop()
 
-            data = df[["target"] + feats].dropna().copy()
-            X_all = data[feats].values
-            y_all = pd.to_numeric(data["target"], errors="coerce").astype(int).values
+                X0_cv = dtrain0_cv[base_feats_cv].values
+                y0_cv = pd.to_numeric(dtrain0_cv["target"], errors="coerce").astype(int).values
 
-            def best_threshold_for_f1(y_true, probs):
-                thr_grid = np.linspace(0.05, 0.95, 181)
-                best_thr, best_f1 = 0.5, -1.0
-                for thr in thr_grid:
-                    y_hat = (probs >= thr).astype(int)
-                    f1 = f1_score(y_true, y_hat, average="binary", zero_division=0)
-                    if f1 > best_f1:
-                        best_f1, best_thr = f1, thr
-                return best_thr, best_f1
+                base_pipe_cv = Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("logit", LogisticRegression(
+                        C=C_cv, class_weight=("balanced" if balance_cv else None),
+                        solver="liblinear", max_iter=400))
+                ])
+                base_pipe_cv.fit(X0_cv, y0_cv)
 
-            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-            rows, cms, reports = [], [], []
+                init_coefs_cv = base_pipe_cv.named_steps["logit"].coef_.ravel()
+                order_cv = np.argsort(-np.abs(init_coefs_cv))
+                feats_cv = [base_feats_cv[i] for i in order_cv[:top_k_cv]]
+            except Exception as e:
+                st.info("Scikit-learn is required for this tab. Add `scikit-learn` to requirements.")
+                st.exception(e)
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.stop()
 
-            for fold_id, (tr_idx, va_idx) in enumerate(skf.split(X_all, y_all), start=1):
-                X_tr, X_va = X_all[tr_idx], X_all[va_idx]
-                y_tr, y_va = y_all[tr_idx], y_all[va_idx]
+            st.write("**Features used for CV:**", ", ".join(feats_cv))
+            run_cv = st.button("Run 5-fold CV", key="run_cv_button")
 
-                scaler = StandardScaler().fit(X_tr)
-                X_tr_s = scaler.transform(X_tr)
-                X_va_s = scaler.transform(X_va)
+            if run_cv:
+                from sklearn.model_selection import StratifiedKFold
+                from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix, roc_auc_score
 
-                logit = LogisticRegression(
-                    C=C,
-                    class_weight=("balanced" if balance else None),
-                    max_iter=1000,
-                    solver="liblinear",
-                    random_state=42
+                data = df[["target"] + feats_cv].dropna().copy()
+                X_all = data[feats_cv].values
+                y_all = pd.to_numeric(data["target"], errors="coerce").astype(int).values
+
+                def best_threshold_for_f1(y_true, probs):
+                    thr_grid = np.linspace(0.05, 0.95, 181)
+                    best_thr, best_f1 = 0.5, -1.0
+                    for thr in thr_grid:
+                        y_hat = (probs >= thr).astype(int)
+                        f1 = f1_score(y_true, y_hat, average="binary", zero_division=0)
+                        if f1 > best_f1:
+                            best_f1, best_thr = f1, thr
+                    return best_thr, best_f1
+
+                skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+                rows, cms, reports = [], [], []
+
+                for fold_id, (tr_idx, va_idx) in enumerate(skf.split(X_all, y_all), start=1):
+                    X_tr, X_va = X_all[tr_idx], X_all[va_idx]
+                    y_tr, y_va = y_all[tr_idx], y_all[va_idx]
+
+                    scaler = StandardScaler().fit(X_tr)
+                    X_tr_s = scaler.transform(X_tr)
+                    X_va_s = scaler.transform(X_va)
+
+                    logit = LogisticRegression(
+                        C=C_cv,
+                        class_weight=("balanced" if balance_cv else None),
+                        max_iter=1000,
+                        solver="liblinear",
+                        random_state=42
+                    )
+                    logit.fit(X_tr_s, y_tr)
+
+                    p_tr = logit.predict_proba(X_tr_s)[:, 1]
+                    p_va = logit.predict_proba(X_va_s)[:, 1]
+
+                    best_thr, _ = best_threshold_for_f1(y_va, p_va)
+                    y_tr_hat = (p_tr >= best_thr).astype(int)
+                    y_va_hat = (p_va >= best_thr).astype(int)
+
+                    tr_acc = accuracy_score(y_tr, y_tr_hat)
+                    va_acc = accuracy_score(y_va, y_va_hat)
+                    va_f1 = f1_score(y_va, y_va_hat, average="binary", zero_division=0)
+                    va_auc = roc_auc_score(y_va, p_va)
+
+                    cm = confusion_matrix(y_va, y_va_hat, labels=[0, 1])
+                    rep = classification_report(y_va, y_va_hat, digits=3, zero_division=0)
+                    cms.append(cm); reports.append((fold_id, rep))
+
+                    rows.append({
+                        "fold": fold_id,
+                        "best_thr": round(float(best_thr), 3),
+                        "train_acc": round(tr_acc, 4),
+                        "val_acc": round(va_acc, 4),
+                        "val_f1": round(va_f1, 4),
+                        "val_auc": round(va_auc, 4),
+                        "support_0": int((y_va == 0).sum()),
+                        "support_1": int((y_va == 1).sum()),
+                    })
+
+                results_df = pd.DataFrame(rows)
+                st.subheader("Per-Fold Results")
+                st.dataframe(results_df, use_container_width=True)
+
+                avg = results_df.mean(numeric_only=True)
+                st.subheader("Averages (5-Fold)")
+                st.write(
+                    f"**Mean Train Acc:** {avg['train_acc']:.4f} | "
+                    f"**Mean Val Acc:** {avg['val_acc']:.4f} | "
+                    f"**Mean Val F1:** {avg['val_f1']:.4f} | "
+                    f"**Mean Val AUC:** {avg['val_auc']:.4f} | "
+                    f"**Mean Best Thr:** {avg['best_thr']:.3f}"
                 )
-                logit.fit(X_tr_s, y_tr)
 
-                p_tr = logit.predict_proba(X_tr_s)[:, 1]
-                p_va = logit.predict_proba(X_va_s)[:, 1]
+                st.subheader("Confusion Matrices")
+                total_cm = np.zeros((2, 2), dtype=int)
+                for i, cm in enumerate(cms, start=1):
+                    total_cm += cm
+                    with st.expander(f"Fold {i} confusion matrix & report"):
+                        cm_df = pd.DataFrame(cm, index=["True 0","True 1"], columns=["Pred 0","Pred 1"])
+                        st.dataframe(cm_df, use_container_width=True)
+                        st.code(reports[i-1][1], language="text")
 
-                best_thr, _ = best_threshold_for_f1(y_va, p_va)
-                y_tr_hat = (p_tr >= best_thr).astype(int)
-                y_va_hat = (p_va >= best_thr).astype(int)
-
-                tr_acc = accuracy_score(y_tr, y_tr_hat)
-                va_acc = accuracy_score(y_va, y_va_hat)
-                va_f1 = f1_score(y_va, y_va_hat, average="binary", zero_division=0)
-                va_auc = roc_auc_score(y_va, p_va)
-
-                cm = confusion_matrix(y_va, y_va_hat, labels=[0, 1])
-                rep = classification_report(y_va, y_va_hat, digits=3, zero_division=0)
-                cms.append(cm); reports.append((fold_id, rep))
-
-                rows.append({
-                    "fold": fold_id,
-                    "best_thr": round(float(best_thr), 3),
-                    "train_acc": round(tr_acc, 4),
-                    "val_acc": round(va_acc, 4),
-                    "val_f1": round(va_f1, 4),
-                    "val_auc": round(va_auc, 4),
-                    "support_0": int((y_va == 0).sum()),
-                    "support_1": int((y_va == 1).sum()),
-                })
-
-            results_df = pd.DataFrame(rows)
-            st.subheader("Per-Fold Results")
-            st.dataframe(results_df, use_container_width=True)
-
-            avg = results_df.mean(numeric_only=True)
-            st.subheader("Averages (5-Fold)")
-            st.write(
-                f"**Mean Train Acc:** {avg['train_acc']:.4f} | "
-                f"**Mean Val Acc:** {avg['val_acc']:.4f} | "
-                f"**Mean Val F1:** {avg['val_f1']:.4f} | "
-                f"**Mean Val AUC:** {avg['val_auc']:.4f} | "
-                f"**Mean Best Thr:** {avg['best_thr']:.3f}"
-            )
-
-            st.subheader("Confusion Matrices")
-            total_cm = np.zeros((2, 2), dtype=int)
-            for i, cm in enumerate(cms, start=1):
-                total_cm += cm
-                with st.expander(f"Fold {i} confusion matrix & report"):
-                    cm_df = pd.DataFrame(cm, index=["True 0","True 1"], columns=["Pred 0","Pred 1"])
-                    st.dataframe(cm_df, use_container_width=True)
-                    st.code(reports[i-1][1], language="text")
-
-            st.subheader("Aggregated Confusion Matrix")
-            cm_df_total = pd.DataFrame(total_cm, index=["True 0","True 1"], columns=["Pred 0","Pred 1"])
-            st.dataframe(cm_df_total, use_container_width=True)
-            st.caption("Threshold is optimized per fold to maximize F1 for the positive class (1 = Fully Paid).")
+                st.subheader("Aggregated Confusion Matrix")
+                cm_df_total = pd.DataFrame(total_cm, index=["True 0","True 1"], columns=["Pred 0","Pred 1"])
+                st.dataframe(cm_df_total, use_container_width=True)
+                st.caption("Threshold is optimized per fold to maximize F1 for the positive class (1 = Fully Paid).")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
