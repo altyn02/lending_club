@@ -251,28 +251,30 @@ with tab_data:
 
     st.markdown('</div>', unsafe_allow_html=True)
     
-# ========== Distributions (merged Histograms + Boxplots) ==========
+# ========== Distributions (merged Histograms + Boxplots + Line) ==========
 with tab_dist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Distributions — Histograms & Boxplots (Selected Variables)")
+    st.subheader("Distributions — Histograms, Boxplots & Line")
     st.caption("🎯 Target legend: 0 = Charged Off, 1 = Fully Paid")
 
     if not EDA_VARS:
         st.info("No suitable numeric columns from the requested list.")
     else:
-        # --- Controls
-        c1, c2, c3 = st.columns([1,1,2])
+        # --- Controls row
+        c1, c2, c3, c4 = st.columns([1,1,1,2])
         with c1:
-            show_hist = st.checkbox("Show histograms", value=True, key="dist_show_hist")
+            show_hist = st.checkbox("Histograms", value=True, key="dist_show_hist")
         with c2:
-            show_box  = st.checkbox("Show boxplots",  value=True, key="dist_show_box")
+            show_box  = st.checkbox("Boxplots",  value=True, key="dist_show_box")
         with c3:
+            show_line = st.checkbox("Line",       value=True, key="dist_show_line")
+        with c4:
             bins = st.slider("Histogram bins", 10, 80, 40, 5, key="dist_bins")
 
-        # DATA
+        # Base data for EDA visuals
         src = df_eda[EDA_VARS + (["target"] if "target" in df_eda.columns else [])].dropna()
 
-        # --- Histograms (faceted by variable, colored by target if present)
+        # -------------------- Histograms --------------------
         if show_hist:
             hist = (
                 alt.Chart(src)
@@ -288,12 +290,11 @@ with tab_dist:
             )
             st.altair_chart(hist, use_container_width=True)
 
-        # --- Boxplots (faceted by variable, X = target)
+        # -------------------- Boxplots --------------------
         if show_box:
             if "target" not in df_eda.columns:
                 st.info("Boxplots require 'target' to group by.")
             else:
-                # reshape for facet by variable
                 melt = src.melt(id_vars=["target"], value_vars=EDA_VARS,
                                 var_name="variable", value_name="value")
                 box = (
@@ -309,7 +310,86 @@ with tab_dist:
                 )
                 st.altair_chart(box, use_container_width=True)
 
+        # -------------------- Line chart (time trend) --------------------
+        if show_line:
+            # time-like columns to try (pick first available)
+            time_candidates = [c for c in ["issue_year", "issue_d"] if c in df.columns]
+            time_col = st.selectbox(
+                "Time column for line chart",
+                options=time_candidates if time_candidates else [],
+                index=0 if time_candidates else None,
+                help="Uses issue_year if available; otherwise choose a time-like column."
+            )
+
+            y_var = st.selectbox(
+                "Y variable",
+                options=EDA_VARS,
+                index=(EDA_VARS.index("loan_amnt") if "loan_amnt" in EDA_VARS else 0),
+                key="line_y_var"
+            )
+
+            agg_choice = st.selectbox("Aggregation", ["Mean", "Median", "Count"], index=0, key="line_agg")
+
+            if not time_col:
+                st.info("No time column available (e.g., issue_year).")
+            else:
+                # Prepare a tidy frame with time, y, and target
+                df_line = df[[time_col, y_var] + (["target"] if "target" in df.columns else [])].copy()
+
+                # Convert time column appropriately
+                if time_col == "issue_year":
+                    # treat as ordered category or integer
+                    df_line["__time__"] = pd.to_numeric(df_line[time_col], errors="coerce")
+                else:
+                    # fallback: try parse datetime
+                    dt = pd.to_datetime(df_line[time_col], errors="coerce")
+                    # display by year if too granular
+                    df_line["__time__"] = dt.dt.year
+
+                df_line = df_line.dropna(subset=["__time__"])
+
+                # Choose aggregation
+                if agg_choice == "Mean":
+                    agg_func = "mean"
+                    y_enc_title = f"Mean {y_var}"
+                elif agg_choice == "Median":
+                    agg_func = "median"
+                    y_enc_title = f"Median {y_var}"
+                else:  # Count
+                    agg_func = "count"
+                    y_enc_title = f"Count ({y_var} non-null)"
+
+                # Group (with/without target)
+                if "target" in df_line.columns:
+                    g = df_line.groupby(["__time__", "target"], observed=False)
+                else:
+                    g = df_line.groupby(["__time__"], observed=False)
+
+                if agg_choice == "Count":
+                    plot_df = g[y_var].count().reset_index(name="y")
+                else:
+                    plot_df = g[y_var].agg(agg_func).reset_index(name="y")
+
+                # Build Altair line
+                enc_color = alt.Color("target:N", title="target") if "target" in plot_df.columns else alt.value(None)
+
+                line = (
+                    alt.Chart(plot_df)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("__time__:O", title=("Issue Year" if time_col=="issue_year" else time_col)),
+                        y=alt.Y("y:Q", title=y_enc_title),
+                        color=enc_color,
+                        tooltip=[alt.Tooltip("__time__:O", title="Time"),
+                                 alt.Tooltip("y:Q", title=y_enc_title, format=".2f")] +
+                                ([alt.Tooltip("target:N", title="target")] if "target" in plot_df.columns else [])
+                    )
+                    .properties(height=300, title=f"{agg_choice} {y_var} by {time_col}")
+                )
+                st.altair_chart(line, use_container_width=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ========== Correlation Heatmap (kept; lightweight) ==========
 with tab_corr:
