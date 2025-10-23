@@ -207,8 +207,9 @@ def categorical_cols(df: pd.DataFrame, max_card: int = 30, include_target_if_cat
     return list(dict.fromkeys(cats))
 
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
-tab_data, tab_hist, tab_box, tab_corr, tab_ttest, tab_pair, tab_logit = st.tabs([
-    "🧭 Data Exploration","📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "⚖️ T-tests / ANOVA", "🔗 Pairwise (Sample)", "🧠 Logit"
+tab_hist, tab_box, tab_corr, tab_ttest, tab_pair, tab_cv, tab_logit = st.tabs([
+    "📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap",
+    "📏 t-Tests",  "🔗 Pairwise (Sample)", "🏁 Performance Evaluation ", "🧠 Logit"
 ])
 
 # ========== Data Exploration ==========
@@ -352,128 +353,193 @@ with tab_corr:
 
 with tab_ttest:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("T-tests & ANOVA — quick comparisons")
-    st.write("Compare numeric features across groups (default: target). Uses Welch t-test for 2 groups and one-way ANOVA for >2 groups. Results can be downloaded as CSV.")
+    st.subheader("Welch’s t-tests (0 = Charged Off, 1 = Fully Paid)")
 
-    try:
-        from scipy import stats
-    except Exception as e:
-        st.info("scipy is required for this tab. Add `scipy` to requirements.")
-        st.exception(e)
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.stop()
-
-    # get candidate grouping columns; ensure 'target' is available if it's the only categorical-like column
-    group_opts = categorical_cols(df_eda, max_card=50, include_target_if_cat=True) or []
-    if not group_opts and "target" in df_eda.columns:
-        group_opts = ["target"]
-
-    if not group_opts:
-        st.info("No categorical-like column available for grouping.")
+    if "target" not in df.columns:
+        st.info("No 'target' column found.")
     else:
-        group_col = st.selectbox("Group by (categorical)", options=group_opts, index=0 if "target" in group_opts else 0)
-        # numeric candidates (exclude grouping col)
-        num_candidates = [c for c in df_eda.select_dtypes(include=[np.number]).columns if c != group_col]
-        if not num_candidates:
-            st.info("No numeric columns to test.")
+        import numpy as np
+        import pandas as pd
+        from scipy import stats
+
+        tnum = pd.to_numeric(df["target"], errors="coerce")
+        mask_valid = tnum.isin([0, 1])
+        if mask_valid.sum() < 2 or tnum[mask_valid].nunique() < 2:
+            st.info("Both target groups must be present to run t-tests.")
         else:
-            cap = st.slider("Max features to test (cap)", 3, min(60, max(3, len(num_candidates))), min(12, len(num_candidates)))
-            preset = st.radio("Select features", ["Top by |corr with grouping (if binary)|", "Manual"], horizontal=True)
+            VARS = [c for c in EDA_VARS if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+            if not VARS:
+                st.info("No numeric variables available for t-tests.")
+            else:
+                apply_fdr = st.checkbox("Apply FDR correction (Benjamini–Hochberg)", value=True)
+                rows = []
+                for col in VARS:
+                    s = pd.to_numeric(df[col], errors="coerce")
+                    d = pd.DataFrame({"y": s, "t": tnum}).dropna()
+                    g0 = d.loc[d["t"] == 0, "y"].values
+                    g1 = d.loc[d["t"] == 1, "y"].values
+                    if len(g0) < 2 or len(g1) < 2:
+                        continue
 
-            if preset.startswith("Top"):
-                unique_vals = df_eda[group_col].dropna().unique()
-                if len(unique_vals) == 2:
-                    try:
-                        grpnum = pd.to_numeric(df_eda[group_col].astype('category').cat.codes, errors="coerce")
-                        corr_abs = df_eda[num_candidates].corrwith(grpnum, numeric_only=True).abs().sort_values(ascending=False)
-                        chosen = corr_abs.index.tolist()[:cap]
-                    except Exception:
-                        chosen = num_candidates[:cap]
+                    m0, m1 = np.mean(g0), np.mean(g1)
+                    s0, s1 = np.std(g0, ddof=1), np.std(g1, ddof=1)
+                    diff = m1 - m0
+                    tstat, pval = stats.ttest_ind(g1, g0, equal_var=False)
+
+                    v0, v1 = s0**2, s1**2
+                    se2 = v0/len(g0) + v1/len(g1)
+                    df_welch = (se2**2) / (((v0/len(g0))**2)/(len(g0)-1) + ((v1/len(g1))**2)/(len(g1)-1))
+                    tcrit = stats.t.ppf(0.975, df_welch)
+                    ci_low = diff - tcrit*np.sqrt(se2)
+                    ci_high = diff + tcrit*np.sqrt(se2)
+
+                    sp2 = (((len(g0)-1)*v0)+((len(g1)-1)*v1)) / (len(g0)+len(g1)-2)
+                    sp = np.sqrt(sp2)
+                    d_cohen = diff / sp if np.isfinite(sp) and sp > 0 else np.nan
+                    J = 1 - (3 / (4*(len(g0)+len(g1)) - 9))
+                    g_hedges = d_cohen * J
+
+                    rows.append({
+                        "variable": col,
+                        "n_0": len(g0), "n_1": len(g1),
+                        "mean_0": m0, "mean_1": m1,
+                        "std_0": s0, "std_1": s1,
+                        "diff_(1-0)": diff,
+                        "t": tstat, "df": df_welch, "p_value": pval,
+                        "cohen_d": d_cohen, "hedges_g": g_hedges,
+                        "ci_low": ci_low, "ci_high": ci_high
+                    })
+
+                if not rows:
+                    st.info("No valid data to compute t-tests.")
                 else:
-                    chosen = num_candidates[:cap]
-            else:
-                chosen = st.multiselect("Pick numeric features", options=num_candidates, default=num_candidates[:min(cap, len(num_candidates))])
+                    res = pd.DataFrame(rows)
+                    if apply_fdr:
+                        p = res["p_value"].values
+                        m = len(p)
+                        order = np.argsort(p)
+                        ranks = np.empty_like(order)
+                        ranks[order] = np.arange(1, m+1)
+                        q = p * m / ranks
+                        q_adj = np.minimum.accumulate(q[np.argsort(order)][::-1])[::-1]
+                        res["q_value"] = q_adj
+                        res["significant"] = res["q_value"] < 0.05
+                    else:
+                        res["significant"] = res["p_value"] < 0.05
 
-            chosen = [c for c in chosen if c in df_eda.columns][:cap]
-            if not chosen:
-                st.info("No features selected.")
-            else:
-                # robust sample slider (handles missing EDA_SAMPLE_N)
-                eda_sample = globals().get("EDA_SAMPLE_N", 10000)
-                try:
-                    eda_sample = int(eda_sample)
-                except Exception:
-                    eda_sample = 10000
+                    st.dataframe(res, use_container_width=True)
+                    st.caption("Welch’s t-test (unequal variances). CI = 95% for mean difference (1−0). Effect size = Cohen’s d (Hedges’ g corrected).")
 
-                max_sample = max(1, min(len(df), eda_sample))
-                min_value = 1
-                default = min(max_sample, 5000)
-                step = 500 if max_sample >= 500 else 1
-                sample_n = st.slider("Sample rows for speed", min_value=min_value, max_value=max_sample, value=default, step=step)
-
-                src = df.sample(sample_n, random_state=42) if len(df) > sample_n else df.copy()
-                src = src[[group_col] + chosen].dropna()
-
-                @st.cache_data
-                def compute_tests(src_df, group_col, features):
-                    rows = []
-                    groups = src_df[group_col].astype("category")
-                    levels = list(groups.cat.categories)
-                    for f in features:
-                        row = {"feature": f}
-                        vals = []
-                        for lv in levels:
-                            arr = pd.to_numeric(src_df.loc[groups == lv, f], errors="coerce").dropna().values
-                            vals.append(arr)
-                        if len(vals) >= 2 and all(len(v) >= 2 for v in vals):
-                            if len(vals) == 2:
-                                t_eq, p_eq = stats.ttest_ind(vals[0], vals[1], equal_var=True)
-                                t_w, p_w = stats.ttest_ind(vals[0], vals[1], equal_var=False)
-                                m1, m2 = vals[0].mean(), vals[1].mean()
-                                s1, s2 = vals[0].std(ddof=1), vals[1].std(ddof=1)
-                                denom = np.sqrt((s1**2 + s2**2) / 2) if (s1 > 0 or s2 > 0) else np.nan
-                                cohens_d = (m1 - m2) / denom if denom and not np.isnan(denom) else np.nan
-                                row.update({
-                                    "F_statistic": np.nan, "F_pvalue": np.nan,
-                                    "t_equal": float(t_eq), "p_equal": float(p_eq),
-                                    "t_welch": float(t_w), "p_welch": float(p_w),
-                                    "t_final": float(t_w), "p_final": float(p_w),
-                                    "cohens_d": float(cohens_d)
-                                })
-                            else:
-                                try:
-                                    F, pF = stats.f_oneway(*vals)
-                                except Exception:
-                                    F, pF = np.nan, np.nan
-                                row.update({
-                                    "F_statistic": float(F), "F_pvalue": float(pF),
-                                    "t_equal": np.nan, "p_equal": np.nan,
-                                    "t_welch": np.nan, "p_welch": np.nan,
-                                    "t_final": np.nan, "p_final": np.nan,
-                                    "cohens_d": np.nan
-                                })
-                        else:
-                            row.update({
-                                "F_statistic": np.nan, "F_pvalue": np.nan,
-                                "t_equal": np.nan, "p_equal": np.nan,
-                                "t_welch": np.nan, "p_welch": np.nan,
-                                "t_final": np.nan, "p_final": np.nan,
-                                "cohens_d": np.nan
-                            })
-                        rows.append(row)
-                    return pd.DataFrame(rows)
-
-                with st.spinner("Computing tests…"):
-                    res = compute_tests(src, group_col, chosen)
-
-                st.markdown("#### Results (first rows)")
-                st.dataframe(res.reset_index(drop=True), use_container_width=True)
-
-                csv = res.to_csv(index=False).encode("utf-8")
-                st.download_button("Download results CSV", data=csv, file_name="ttest_anova_results.csv", mime="text/csv")
-
-                st.caption("Notes: t_final/p_final = Welch for 2 groups; for >2 groups F_statistic/F_pvalue shown. Cohen's d uses pooled-ish denom for quick effect-size estimate.")
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ========== Performance  ==========
+   
+with tab_cv:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("5-Fold Cross-Validation Performance (F1-optimized)")
+
+    if "target" not in df.columns:
+        st.info("No 'target' column found.")
+    else:
+        run_cv = st.button("Run 5-fold CV", key="run_cv_button")
+        if run_cv:
+            from sklearn.model_selection import StratifiedKFold
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix, roc_auc_score
+
+            data = df[["target"] + feats].dropna().copy()
+            X_all = data[feats].values
+            y_all = pd.to_numeric(data["target"], errors="coerce").astype(int).values
+
+            def best_threshold_for_f1(y_true, probs):
+                thr_grid = np.linspace(0.05, 0.95, 181)
+                best_thr, best_f1 = 0.5, -1.0
+                for thr in thr_grid:
+                    y_hat = (probs >= thr).astype(int)
+                    f1 = f1_score(y_true, y_hat, average="binary", zero_division=0)
+                    if f1 > best_f1:
+                        best_f1, best_thr = f1, thr
+                return best_thr, best_f1
+
+            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            rows, cms, reports = [], [], []
+
+            for fold_id, (tr_idx, va_idx) in enumerate(skf.split(X_all, y_all), start=1):
+                X_tr, X_va = X_all[tr_idx], X_all[va_idx]
+                y_tr, y_va = y_all[tr_idx], y_all[va_idx]
+
+                scaler = StandardScaler().fit(X_tr)
+                X_tr_s = scaler.transform(X_tr)
+                X_va_s = scaler.transform(X_va)
+
+                logit = LogisticRegression(
+                    C=C,
+                    class_weight=("balanced" if balance else None),
+                    max_iter=1000,
+                    solver="liblinear",
+                    random_state=42
+                )
+                logit.fit(X_tr_s, y_tr)
+
+                p_tr = logit.predict_proba(X_tr_s)[:, 1]
+                p_va = logit.predict_proba(X_va_s)[:, 1]
+
+                best_thr, _ = best_threshold_for_f1(y_va, p_va)
+                y_tr_hat = (p_tr >= best_thr).astype(int)
+                y_va_hat = (p_va >= best_thr).astype(int)
+
+                tr_acc = accuracy_score(y_tr, y_tr_hat)
+                va_acc = accuracy_score(y_va, y_va_hat)
+                va_f1 = f1_score(y_va, y_va_hat, average="binary", zero_division=0)
+                va_auc = roc_auc_score(y_va, p_va)
+
+                cm = confusion_matrix(y_va, y_va_hat, labels=[0, 1])
+                rep = classification_report(y_va, y_va_hat, digits=3, zero_division=0)
+                cms.append(cm); reports.append((fold_id, rep))
+
+                rows.append({
+                    "fold": fold_id,
+                    "best_thr": round(float(best_thr), 3),
+                    "train_acc": round(tr_acc, 4),
+                    "val_acc": round(va_acc, 4),
+                    "val_f1": round(va_f1, 4),
+                    "val_auc": round(va_auc, 4),
+                    "support_0": int((y_va == 0).sum()),
+                    "support_1": int((y_va == 1).sum()),
+                })
+
+            results_df = pd.DataFrame(rows)
+            st.subheader("Per-Fold Results")
+            st.dataframe(results_df, use_container_width=True)
+
+            avg = results_df.mean(numeric_only=True)
+            st.subheader("Averages (5-Fold)")
+            st.write(
+                f"**Mean Train Acc:** {avg['train_acc']:.4f} | "
+                f"**Mean Val Acc:** {avg['val_acc']:.4f} | "
+                f"**Mean Val F1:** {avg['val_f1']:.4f} | "
+                f"**Mean Val AUC:** {avg['val_auc']:.4f} | "
+                f"**Mean Best Thr:** {avg['best_thr']:.3f}"
+            )
+
+            st.subheader("Confusion Matrices")
+            total_cm = np.zeros((2, 2), dtype=int)
+            for i, cm in enumerate(cms, start=1):
+                total_cm += cm
+                with st.expander(f"Fold {i} confusion matrix & report"):
+                    cm_df = pd.DataFrame(cm, index=["True 0","True 1"], columns=["Pred 0","Pred 1"])
+                    st.dataframe(cm_df, use_container_width=True)
+                    st.code(reports[i-1][1], language="text")
+
+            st.subheader("Aggregated Confusion Matrix")
+            cm_df_total = pd.DataFrame(total_cm, index=["True 0","True 1"], columns=["Pred 0","Pred 1"])
+            st.dataframe(cm_df_total, use_container_width=True)
+            st.caption("Threshold is optimized per fold to maximize F1 for the positive class (1 = Fully Paid).")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
     
 # ========== STEPWISE ==========
 
