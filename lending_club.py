@@ -190,9 +190,46 @@ def get_featured_vars(df, k=6):
 
 # -------------------- Tabs (Density removed; Logit in its own tab) --------------------
 tab_hist, tab_box, tab_corr, tab_logit = st.tabs([
-    "📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "🧠 Logit"
+    "🧭 Data Exploration","📊 Histograms", "📦 Boxplots", "🧮 Correlation Heatmap", "🧠 Logit"
 ])
 
+# ========== Data Exploration ==========
+
+with tab_data:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Data Exploration — quick view")
+    st.write("Sample of the dataframe used for visualizations (filters applied).")
+
+    # sample for display (cap for the UI)
+    SAMPLE_N = EDA_SAMPLE_N if 'EDA_SAMPLE_N' in globals() else 10000
+    sample = df if len(df) <= SAMPLE_N else df.sample(SAMPLE_N, random_state=42)
+
+    # quick metrics
+    rows, cols = sample.shape
+    missing_pct = sample.isna().mean().mean() * 100
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Rows (shown)", f"{rows:,}")
+    with c2:
+        st.metric("Columns", f"{cols}")
+    with c3:
+        st.metric("Avg missing", f"{missing_pct:.2f}%")
+
+    st.markdown("#### Head (first rows)")
+    st.dataframe(sample.head(10), use_container_width=True)
+
+    st.markdown("#### Statistical summary (describe)")
+    desc = sample.describe(include="all").T
+    # format numeric-like columns to 3 decimals for readability
+    for col in desc.columns:
+        try:
+            desc[col] = pd.to_numeric(desc[col], errors="coerce").round(3).combine_first(desc[col])
+        except Exception:
+            pass
+    st.dataframe(desc, use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+    
 # ========== Histograms (fixed variables, no chunking) ==========
 with tab_hist:
     st.markdown('<div class="card">', unsafe_allow_html=True)
