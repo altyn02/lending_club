@@ -143,7 +143,7 @@ with k1:
 with k2:
     st.markdown(f'<div class="kpi"><div class="label">Columns</div><div class="value">{total_cols}</div></div>', unsafe_allow_html=True)
 with k3:
-    st.markdown(f'<div class="kpi"><div class="label">Bad Rate (target==1)</div><div class="value">{bad_ratio}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi"><div class="label">Bad Rate </div><div class="value">{bad_ratio}</div></div>', unsafe_allow_html=True)
 
 st.write("")
 # Global target legend (always visible)
@@ -439,7 +439,7 @@ st.write("")
 st.markdown(
     """
     <div style="text-align:center; color:#64748b; font-size:.9rem; padding:10px 0 0 0;">
-      Interactive Streamlit dashboard • Fixed-variable EDA • Density removed • Logit in its own tab ✅
+      Camila and Altynsara ✅
     </div>
     """,
     unsafe_allow_html=True
